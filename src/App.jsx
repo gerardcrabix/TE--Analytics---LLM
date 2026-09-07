@@ -3,6 +3,7 @@ import { Sidebar } from './components/Sidebar';
 import { GeoTab } from './components/tabs/GeoTab';
 import { KolTab } from './components/tabs/KolTab';
 import { TreeTab } from './components/tabs/TreeTab';
+import { ScenarioCompareTab } from './components/tabs/ScenarioCompareTab';
 import { RecoTab } from './components/tabs/RecoTab';
 import { PivotTab } from './components/tabs/PivotTab';
 import { DataTab } from './components/tabs/DataTab';
@@ -20,6 +21,7 @@ function Shell() {
             {tab === 'geo' && <GeoTab />}
             {tab === 'kol' && <KolTab />}
             {tab === 'tree' && <TreeTab />}
+            {tab === 'scenarioCompare' && <ScenarioCompareTab />}
             {tab === 'reco' && <RecoTab />}
             {tab === 'pivot' && <PivotTab />}
             {tab === 'data' && <DataTab />}

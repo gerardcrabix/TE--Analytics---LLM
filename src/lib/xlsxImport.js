@@ -30,6 +30,16 @@ export function readWorkbookRows(file, requiredHeaderLower) {
   });
 }
 
+/** Some Usage LLM exports carry mojibake (broken-encoding) job labels.
+ * Neutralizing non-ASCII characters keeps dictionary keys stable across
+ * imports instead of silently duplicating the same job description under
+ * two different byte sequences. */
+function cleanLabel(s) {
+  if (!s) return s;
+  // eslint-disable-next-line no-control-regex -- \x00 is intentional: this strips everything outside printable ASCII.
+  return s.replace(/[^\x00-\x7F]/g, 'A');
+}
+
 function upsertInto(map, arr, value) {
   if (map.has(value)) return map.get(value);
   const idx = arr.length;
@@ -70,7 +80,6 @@ export async function importUsageFile(file, dash) {
     jobFuncDesc: idx('job_function_description'), jobDesc: idx('job_description'),
     userType: idx('user_type'), year: idx('year'), month: idx('month'), monthYear: idx('month_year'),
     chatgpt: idx('chatgpt_prompts'), copilotTotal: idx('copilot_total_prompts'), telme: idx('telme_prompts'),
-    total: idx('sum_llm'),
   };
   if (col.email < 0) {
     throw new Error("Colonne 'email_address' introuvable dans le fichier Usage LLM.");
@@ -100,7 +109,7 @@ export async function importUsageFile(file, dash) {
 
   rows.slice(1).forEach((r) => {
     if (!r || !r[col.email]) return;
-    const email = String(r[col.email]).trim();
+    const email = String(r[col.email]).trim().toLowerCase();
     if (!email) return;
     const emailIdx = upsertInto(emailMap, dicts.emails, email);
     const year = parseInt(r[col.year], 10);
@@ -121,14 +130,14 @@ export async function importUsageFile(file, dash) {
     const buIdx = upsertInto(buMap, dicts.businessUnits, String(r[col.bu] || '').trim());
     const jobFunIdx = upsertInto(jobFunMap, dicts.jobFunctions, String(r[col.jobFunction] || '').trim());
     const opStatusIdx = upsertInto(opStatusMap, dicts.operatorStatuses, String(r[col.opStatus] || '').trim());
-    const jobFamilyIdx = upsertInto(jobFamilyMap, dicts.jobFamilies, String(r[col.jobFamily] || '').trim());
-    const jobFuncDescIdx = upsertInto(jobFuncDescMap, dicts.jobFunctionDescriptions, String(r[col.jobFuncDesc] || '').trim());
-    const jobDescIdx = upsertInto(jobDescMap, dicts.jobDescriptions, String(r[col.jobDesc] || '').trim());
+    const jobFamilyIdx = upsertInto(jobFamilyMap, dicts.jobFamilies, cleanLabel(String(r[col.jobFamily] || '').trim()));
+    const jobFuncDescIdx = upsertInto(jobFuncDescMap, dicts.jobFunctionDescriptions, cleanLabel(String(r[col.jobFuncDesc] || '').trim()));
+    const jobDescIdx = upsertInto(jobDescMap, dicts.jobDescriptions, cleanLabel(String(r[col.jobDesc] || '').trim()));
     const userTypeIdx = upsertInto(userTypeMap, dicts.userTypes, String(r[col.userType] || 'EMPLOYEE').trim());
     const chatgpt = Number(r[col.chatgpt]) || 0;
     const copilotTotal = Number(r[col.copilotTotal]) || 0;
     const telme = Number(r[col.telme]) || 0;
-    const total = col.total >= 0 && r[col.total] != null ? Number(r[col.total]) || 0 : chatgpt + copilotTotal + telme;
+    const total = chatgpt + copilotTotal + telme;
     const newRow = [];
     newRow[USAGE_COL.EMAIL] = emailIdx;
     newRow[USAGE_COL.MONTH] = monthIdx;
@@ -179,7 +188,7 @@ export async function importEmployeesFile(file, dash) {
   const employees = [];
   rows.slice(1).forEach((r) => {
     if (!r || !r[col.userId]) return;
-    const email = col.email >= 0 ? String(r[col.email] || '').trim() : '';
+    const email = col.email >= 0 ? String(r[col.email] || '').trim().toLowerCase() : '';
     const emailIdx = email ? upsertInto(emailMap, dicts.emails, email) : -1;
     const row = [];
     row[EMP_COL.EMAIL] = emailIdx;

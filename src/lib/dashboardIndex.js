@@ -107,6 +107,21 @@ export function personSumFiltered(idx, rec, geo, kolMonths) {
   return sum;
 }
 
+/** The usage row matching the selected year/month scope for a person (not
+ * necessarily their most recent row) — used so the job family/description
+ * shown for someone reflects the period actually being looked at. Falls
+ * back to their latest row when no year/month filter is active. */
+export function rowForGeo(idx, rec, geo) {
+  if (geo.month === 'all' && (!geo.year || geo.year === 'all')) return rec.latest;
+  let found = null;
+  for (const row of rec.rows) {
+    const mIdx = row[U.MONTH];
+    if (geo.month !== 'all') { if (mIdx === geo.month) { found = row; break; } }
+    else { const m = idx.dash.months[mIdx]; if (m && m.year === geo.year) found = row; }
+  }
+  return found;
+}
+
 export function statusColorFor(status) {
   if (status === 'engaged') return 'var(--teal)';
   if (status === 'low') return 'var(--amber)';
@@ -307,30 +322,94 @@ export function computeLeafCounts(node, includeContractors) {
 }
 
 /** Aggregate stats + optional job-family/job-description breakdown, over
- * whatever population `scopeFilter(latestRow, emailIdx, rec)` selects. */
-export function computeReclassInfo(idx, scopeFilter, geo, kolMonths, reclass) {
-  let total = 0, active = 0, nonOpTotal = 0, nonOpActive = 0;
+ * whatever population `scopeFilter(row, emailIdx, rec)` selects.
+ *
+ * - `ignoreOverrides: true` computes the "before forcing" baseline (raw
+ *   operator_status, no descOverrides applied) — used to show before/after.
+ * - `overridesMap` lets a scenario's own descOverrides be used instead of
+ *   the live `reclass.descOverrides` — used by the scenario plan/compare
+ *   tools to evaluate a scenario without touching current state. */
+export function computeReclassInfo(idx, scopeFilter, geo, kolMonths, reclass, ignoreOverrides, overridesMap) {
+  let total = 0, active = 0, nonOpTotal = 0, nonOpActive = 0, opTotal = 0, opActive = 0;
   const byDesc = new Map();
+  const descOverrides = overridesMap || reclass.descOverrides;
   for (const [emailIdx, rec] of idx.byEmail) {
-    const latest = rec.latest;
+    const latest = rowForGeo(idx, rec, geo);
     if (!latest) continue;
     if (!reclass.includeContractors && isContractor(idx, rec)) continue;
     if (scopeFilter && !scopeFilter(latest, emailIdx, rec)) continue;
     const jobDescIdx = idx.hasJobHierarchy ? latest[U.JOB_DESC] : null;
     const jobFunIdx = latest[U.JOB_FUNCTION];
-    const effOpIdx = effectiveOpStatusIdx(reclass.descOverrides, jobDescIdx, latest[U.OP_STATUS]);
+    const effOpIdx = ignoreOverrides ? latest[U.OP_STATUS] : effectiveOpStatusIdx(descOverrides, jobDescIdx, latest[U.OP_STATUS]);
     const sum = personSumFiltered(idx, rec, geo, kolMonths);
     const act = sum > 0 ? 1 : 0;
     total++; active += act;
-    if (effOpIdx !== 0) { nonOpTotal++; nonOpActive += act; }
+    if (effOpIdx !== 0) { nonOpTotal++; nonOpActive += act; } else { opTotal++; opActive += act; }
     if (jobDescIdx !== null && jobDescIdx !== undefined && jobDescIdx >= 0) {
-      if (!byDesc.has(jobDescIdx)) byDesc.set(jobDescIdx, { jobDescIdx, jobFunIdx, total: 0, active: 0, nonOpTotal: 0, nonOpActive: 0 });
+      if (!byDesc.has(jobDescIdx)) byDesc.set(jobDescIdx, { jobDescIdx, jobFunIdx, total: 0, active: 0, nonOpTotal: 0, nonOpActive: 0, opTotal: 0, opActive: 0 });
       const d = byDesc.get(jobDescIdx);
       d.total++; d.active += act;
-      if (effOpIdx !== 0) { d.nonOpTotal++; d.nonOpActive += act; }
+      if (effOpIdx !== 0) { d.nonOpTotal++; d.nonOpActive += act; } else { d.opTotal++; d.opActive += act; }
     }
   }
-  return { total, active, nonOpTotal, nonOpActive, byDesc };
+  return { total, active, nonOpTotal, nonOpActive, opTotal, opActive, byDesc };
+}
+
+/** Groups every job description with inactive Non-Operators (under the given
+ * `descOverrides`) into an "activable" action plan: mobilize existing KOLs
+ * where one is already identified, plan formal training where none is, and
+ * flag branches that look misclassified (already mostly active). Powers the
+ * "Plan d'action pour un scénario" card in Comparer scénarios. */
+export function computeScenarioPlan(idx, descOverrides, includeContractors, geo, kolMonths, kolMinPrompts) {
+  const reclass = { includeContractors, descOverrides };
+  const info = computeReclassInfo(idx, null, geo, kolMonths, reclass, false, descOverrides);
+  const branches = [];
+  for (const [jobDescIdx, d] of info.byDesc) {
+    const inactive = d.nonOpTotal - d.nonOpActive;
+    if (inactive <= 0) continue;
+    const kolNames = [];
+    for (const [emailIdx, rec] of idx.byEmail) {
+      const latest = rec.latest;
+      if (!latest || latest[U.JOB_DESC] !== jobDescIdx) continue;
+      const sum = personSumInWindow(idx, rec, kolMonths);
+      if (sum >= kolMinPrompts) kolNames.push(rec.emp ? rec.emp[E.NAME] : idx.dash.dicts.emails[emailIdx]);
+    }
+    branches.push({
+      jobDescIdx, name: idx.dash.dicts.jobDescriptions[jobDescIdx] || '—', inactive,
+      nonOpTotal: d.nonOpTotal, nonOpActive: d.nonOpActive,
+      activePct: d.nonOpTotal ? Math.round((d.nonOpActive / d.nonOpTotal) * 100) : 0,
+      kolCount: kolNames.length, kolNames: kolNames.slice(0, 3),
+    });
+  }
+  branches.sort((a, b) => b.inactive - a.inactive);
+  const withKol = branches.filter((b) => b.kolCount > 0).slice(0, 4);
+  const withoutKol = branches.filter((b) => b.kolCount === 0).slice(0, 4);
+  const misclassified = branches.filter((b) => b.nonOpTotal >= 5 && b.activePct >= 75).slice(0, 4);
+  const cards = [];
+  if (withKol.length) {
+    const total = withKol.reduce((s, b) => s + b.inactive, 0);
+    cards.push({
+      key: 'kol', title: 'Mobiliser les Non-Operators inactifs via les KOLs identifiés',
+      justification: `${total} personne(s) inactive(s) sur ${withKol.length} job description(s) où un ou plusieurs KOL sont déjà identifiés (onglet KOL & influence).`,
+      actions: withKol.map((b) => `${b.name} : ${b.inactive} inactif(s) / ${b.nonOpTotal} Non-Operators (${b.activePct}% actifs) — mobiliser ${b.kolNames.join(', ')}${b.kolCount > b.kolNames.length ? ' et autres' : ''} pour du pair-coaching ciblé.`),
+    });
+  }
+  if (withoutKol.length) {
+    const total = withoutKol.reduce((s, b) => s + b.inactive, 0);
+    cards.push({
+      key: 'training', title: 'Organiser des sessions de formation ciblées',
+      justification: `${total} personne(s) inactive(s) sur ${withoutKol.length} job description(s) sans champion (KOL) identifié — un accompagnement formel est nécessaire faute de relais interne.`,
+      actions: withoutKol.map((b) => `${b.name} : ${b.inactive} inactif(s) / ${b.nonOpTotal} Non-Operators (${b.activePct}% actifs) — planifier une session de formation dédiée à ce métier.`),
+    });
+  }
+  if (misclassified.length) {
+    cards.push({
+      key: 'reclass', title: 'Revoir la classification de certaines branches',
+      justification: `${misclassified.length} job description(s) classée(s) Non-Operator affichent un taux d'actifs ≥ 75%, proche d'un comportement Operator.`,
+      actions: misclassified.map((b) => `${b.name} : ${b.activePct}% actifs sur ${b.nonOpTotal} pers. — vérifier si cette branche devrait être reclassée Operator (onglet Managérial / Domaine, arbre).`),
+    });
+  }
+  return cards;
 }
 
 export function computeReclassAdvice(idx, byDesc, kolMinPrompts, kolMonths) {
@@ -350,15 +429,17 @@ export function computeReclassAdvice(idx, byDesc, kolMinPrompts, kolMonths) {
   kols.sort((a, b) => b.sum - a.sum);
   const d = byDesc.get(priority);
   return {
-    jobDescIdx: priority, inactiveCount: maxInactive, poolTotal: d.nonOpTotal,
+    jobDescIdx: priority, jobFunIdx: d.jobFunIdx, inactiveCount: maxInactive, poolTotal: d.nonOpTotal,
     poolActivePct: d.nonOpTotal ? Math.round((d.nonOpActive / d.nonOpTotal) * 100) : 0,
     kolCount: kols.length, kolNames: kols.slice(0, 3).map((k) => k.name),
   };
 }
 
 /** Domaine (job function) → job family → job description tree, used by the
- * "Domaine" mode of the Managérial/Domaine tab. */
+ * "Domaine" mode of the Managérial/Domaine tab. `domainJobFunIdx === 'all'`
+ * aggregates every domain together. */
 export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass) {
+  const isAll = domainJobFunIdx === 'all';
   const passGeo = (latest) => {
     if (geo.region !== 'all' && latest[U.REGION] !== geo.region) return false;
     if (geo.country !== 'all' && latest[U.COUNTRY] !== geo.country) return false;
@@ -367,11 +448,12 @@ export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass)
     if (geo.opStatus !== 'all' && latest[U.OP_STATUS] !== geo.opStatus) return false;
     return true;
   };
+  const domainName = isAll ? 'Tous les domaines' : idx.dash.dicts.jobFunctions[domainJobFunIdx] || '—';
   if (!idx.hasJobHierarchy) {
     let total = 0, opTotal = 0, opActive = 0, nonOpTotal = 0, nonOpActive = 0;
     for (const [, rec] of idx.byEmail) {
-      const latest = rec.latest;
-      if (!latest || latest[U.JOB_FUNCTION] !== domainJobFunIdx || !passGeo(latest)) continue;
+      const latest = rowForGeo(idx, rec, geo);
+      if (!latest || (!isAll && latest[U.JOB_FUNCTION] !== domainJobFunIdx) || !passGeo(latest)) continue;
       if (!reclass.includeContractors && isContractor(idx, rec)) continue;
       const sum = personSumFiltered(idx, rec, geo, kolMonths);
       const act = sum > 0 ? 1 : 0;
@@ -379,7 +461,7 @@ export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass)
       if (latest[U.OP_STATUS] === 0) { opTotal++; opActive += act; } else { nonOpTotal++; nonOpActive += act; }
     }
     return {
-      key: 'domain:' + domainJobFunIdx, jobFunIdx: domainJobFunIdx, name: idx.dash.dicts.jobFunctions[domainJobFunIdx] || '—',
+      key: 'domain:' + domainJobFunIdx, jobFunIdx: domainJobFunIdx, name: domainName,
       total, active: opActive + nonOpActive, inactive: total - (opActive + nonOpActive),
       opTotal, opActive, nonOpTotal, nonOpActive, children: [],
     };
@@ -387,8 +469,8 @@ export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass)
   const families = new Map();
   let dTotal = 0, dOpTotal = 0, dNonOpTotal = 0, dOpActive = 0, dNonOpActive = 0;
   for (const [, rec] of idx.byEmail) {
-    const latest = rec.latest;
-    if (!latest || latest[U.JOB_FUNCTION] !== domainJobFunIdx || !passGeo(latest)) continue;
+    const latest = rowForGeo(idx, rec, geo);
+    if (!latest || (!isAll && latest[U.JOB_FUNCTION] !== domainJobFunIdx) || !passGeo(latest)) continue;
     if (!reclass.includeContractors && isContractor(idx, rec)) continue;
     const jobFamilyIdx = latest[U.JOB_FAMILY], jobDescIdx = latest[U.JOB_DESC];
     const sum = personSumFiltered(idx, rec, geo, kolMonths);
@@ -426,7 +508,7 @@ export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass)
     };
   }).sort((a, b) => b.total - a.total);
   return {
-    key: 'domain:' + domainJobFunIdx, jobFunIdx: domainJobFunIdx, name: idx.dash.dicts.jobFunctions[domainJobFunIdx] || '—',
+    key: 'domain:' + domainJobFunIdx, jobFunIdx: domainJobFunIdx, name: domainName,
     total: dTotal, active: dOpActive + dNonOpActive, inactive: dTotal - (dOpActive + dNonOpActive),
     opTotal: dOpTotal, opActive: dOpActive, nonOpTotal: dNonOpTotal, nonOpActive: dNonOpActive, children: familyNodes,
   };

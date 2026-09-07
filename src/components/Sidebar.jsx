@@ -4,6 +4,7 @@ const TABS = [
   { key: 'geo', label: 'Carte mondiale', dot: 'var(--teal)' },
   { key: 'kol', label: 'KOL & influence', dot: 'var(--amber)' },
   { key: 'tree', label: 'Managérial / Domaine', dot: 'var(--gray-dot)' },
+  { key: 'scenarioCompare', label: 'Comparer scénarios', dot: 'var(--purple)' },
   { key: 'reco', label: 'Recommandations', dot: 'var(--purple)' },
   { key: 'pivot', label: 'Analyse dynamique', dot: 'var(--green)' },
   { key: 'data', label: 'Données', dot: 'oklch(55% 0.01 60)' },
