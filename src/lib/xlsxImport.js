@@ -220,12 +220,12 @@ export function datasetSummary(dash) {
  * shared or re-imported into another browser/session. */
 export function exportScenarioXlsx(scenario, idx, geo, kolMonths, reclass) {
   const baseline = computeReclassInfo(idx, null, geo, kolMonths, reclass, true);
-  const rows = [['Job description', 'Statut origine', 'Statut scénario']];
+  const rows = [['Index', 'Job description', 'Statut origine', 'Statut scénario']];
   Object.entries(scenario.descOverrides || {}).forEach(([jobDescIdx, status]) => {
     const id = parseInt(jobDescIdx, 10);
     const d = baseline.byDesc.get(id);
     const natural = d && d.nonOpTotal > 0 && d.total > 0 && d.total - d.nonOpTotal >= d.nonOpTotal ? 'operator' : 'nonOperator';
-    rows.push([idx.dash.dicts.jobDescriptions[id] || '#' + id, OP_LABEL[natural], OP_LABEL[status]]);
+    rows.push([id, idx.dash.dicts.jobDescriptions[id] || '#' + id, OP_LABEL[natural], OP_LABEL[status]]);
   });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Forçages');
@@ -234,9 +234,12 @@ export function exportScenarioXlsx(scenario, idx, geo, kolMonths, reclass) {
 }
 
 /** Parses a scenario .xlsx (as produced by exportScenarioXlsx, or hand-built
- * with the same two columns) into { name, descOverrides, count, unmatched }.
- * Job description names are matched case-insensitively against the current
- * dataset's dictionary; rows that don't match are counted but skipped. */
+ * with equivalent columns) into { name, descOverrides, count, unmatched }.
+ * Job descriptions are matched by the "Index" column when present and still
+ * valid against the current dataset (current export format), falling back
+ * to a case-insensitive name match (legacy exports, or a hand-edited file
+ * without a working index) — rows that match neither are counted but
+ * skipped. */
 export function parseScenarioXlsxFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -260,13 +263,21 @@ export function parseScenarioXlsxFile(file) {
 export function matchScenarioImportRows(rows, dash) {
   const revMap = new Map();
   dash.dicts.jobDescriptions.forEach((nm, idx) => revMap.set(String(nm).trim().toLowerCase(), idx));
+  const header = rows[0] || [];
+  const hasIndexCol = String(header[0] || '').trim().toLowerCase() === 'index';
+  const nameCol = hasIndexCol ? 1 : 0, statusCol = hasIndexCol ? 3 : 2;
   const descOverrides = {};
   let unmatched = 0;
   rows.slice(1).forEach((r) => {
-    if (!r || !r[0]) return;
-    const idx = revMap.get(String(r[0]).trim().toLowerCase());
+    if (!r || (r[nameCol] === undefined && r[0] === undefined)) return;
+    let idx;
+    if (hasIndexCol && r[0] !== undefined && r[0] !== '' && dash.dicts.jobDescriptions[parseInt(r[0], 10)] !== undefined) {
+      idx = parseInt(r[0], 10);
+    } else {
+      idx = revMap.get(String(r[nameCol]).trim().toLowerCase());
+    }
     if (idx === undefined) { unmatched++; return; }
-    const target = STATUS_MAP[String(r[2] || '').trim().toLowerCase()];
+    const target = STATUS_MAP[String(r[statusCol] || '').trim().toLowerCase()];
     if (target) descOverrides[idx] = target;
   });
   return { descOverrides, count: Object.keys(descOverrides).length, unmatched };
