@@ -381,6 +381,11 @@ export function TreeTab() {
               {reclass.pendingImport.count} forçage(s) reconnu(s)
               {reclass.pendingImport.unmatched > 0 && ` — ${reclass.pendingImport.unmatched} job description(s) non reconnue(s), ignorée(s)`}.
             </div>
+            {reclass.pendingImport.unmatched > 0 && (
+              <div style={{ fontSize: 10.5, color: 'oklch(45% 0.1 55)', marginBottom: 10, background: 'oklch(96% 0.03 55)', borderRadius: 6, padding: '6px 8px', maxHeight: 100, overflow: 'auto' }}>
+                {reclass.pendingImport.unmatchedNames?.join(', ')}
+              </div>
+            )}
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
               <button onClick={confirmImportAsNew} style={{ padding: '6px 10px', borderRadius: 6, border: 'none', background: 'var(--purple)', color: 'white', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Créer un nouveau scénario</button>
               <select onChange={(e) => { if (e.target.value) confirmImportOverwrite(e.target.value); e.target.value = ''; }} className="field-control" style={{ padding: '6px 8px', fontSize: 11 }}>

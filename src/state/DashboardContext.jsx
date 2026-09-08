@@ -132,8 +132,8 @@ export function DashboardProvider({ children }) {
   // directly from the component with exportScenarioXlsx) ---
   const importScenarioFile = useCallback(async (file) => {
     const { name, rows } = await parseScenarioXlsxFile(file);
-    const { descOverrides, count, unmatched } = matchScenarioImportRows(rows, dash);
-    setReclass((r) => ({ ...r, pendingImport: { name, descOverrides, count, unmatched } }));
+    const { descOverrides, count, unmatched, unmatchedNames } = matchScenarioImportRows(rows, dash);
+    setReclass((r) => ({ ...r, pendingImport: { name, descOverrides, count, unmatched, unmatchedNames } }));
   }, [dash]);
 
   const confirmImportAsNew = useCallback(() => {
@@ -202,6 +202,49 @@ export function DashboardProvider({ children }) {
     setDataMsg({ busy: false, message: 'Données réinitialisées.', error: null });
   }, []);
 
+  // --- Full backup (usage, employees, scénarios, historique) as a single
+  // downloadable .json — separate from the "Réinitialiser" button above,
+  // which only clears the usage/employees dataset. ---
+  const backupAll = useCallback(() => {
+    const backup = { type: 'llmDashBackup', version: 1, ts: new Date().toISOString(), dash, reclass, dataHistory, recoHistory };
+    const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `backup_llmdash_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [dash, reclass, dataHistory, recoHistory]);
+
+  const clearAllData = useCallback(() => {
+    if (!window.confirm('Vider toutes les données actuelles (usage, employés, scénarios, historique) ? Cette action est irréversible sans sauvegarde.')) return;
+    removeKey(KEYS.dataHistory);
+    removeKey(KEYS.recommendations);
+    setDash(createEmptyDash());
+    setReclass({ ...DEFAULT_RECLASS });
+    setDataHistory([]);
+    setRecoHistory([]);
+    setDataMsg({ busy: false, message: 'Données vidées. Importez de nouveaux fichiers ou réimportez une sauvegarde.', error: null });
+  }, []);
+
+  const restoreBackupFile = useCallback((file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const backup = JSON.parse(ev.target.result);
+        if (!backup || backup.type !== 'llmDashBackup' || !backup.dash) throw new Error('Fichier de sauvegarde invalide.');
+        setDash(backup.dash);
+        if (backup.reclass) setReclass((r) => ({ ...r, ...backup.reclass, pendingImport: null }));
+        if (backup.dataHistory) { setDataHistory(backup.dataHistory); saveJSON(KEYS.dataHistory, backup.dataHistory); }
+        if (backup.recoHistory) { setRecoHistory(backup.recoHistory); saveJSON(KEYS.recommendations, backup.recoHistory); }
+        setDataMsg({ busy: false, message: `Sauvegarde du ${new Date(backup.ts).toLocaleString('fr-FR')} restaurée.`, error: null });
+      } catch (err) {
+        setDataMsg({ busy: false, message: null, error: String((err && err.message) || err) });
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
   const pushRecoEntry = useCallback((entry) => {
     setRecoHistory((h) => {
       const next = [...h, entry];
@@ -221,6 +264,7 @@ export function DashboardProvider({ children }) {
     importScenarioFile, confirmImportAsNew, confirmImportOverwrite, cancelImport,
     selectedEmailIdx, setSelectedEmailIdx, hoverCountryIdx, setHoverCountryIdx, pinnedCountryIdx, setPinnedCountryIdx,
     dataMsg, dataHistory, runImport, resetData,
+    backupAll, clearAllData, restoreBackupFile,
     recoHistory, pushRecoEntry,
   };
 

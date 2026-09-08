@@ -262,23 +262,29 @@ export function parseScenarioXlsxFile(file) {
 
 export function matchScenarioImportRows(rows, dash) {
   const revMap = new Map();
-  dash.dicts.jobDescriptions.forEach((nm, idx) => revMap.set(String(nm).trim().toLowerCase(), idx));
+  dash.dicts.jobDescriptions.forEach((nm, idx) => revMap.set(String(nm).trim(), idx));
+  const revMapLower = new Map();
+  dash.dicts.jobDescriptions.forEach((nm, idx) => {
+    const k = String(nm).trim().toLowerCase();
+    if (!revMapLower.has(k)) revMapLower.set(k, idx);
+  });
   const header = rows[0] || [];
   const hasIndexCol = String(header[0] || '').trim().toLowerCase() === 'index';
   const nameCol = hasIndexCol ? 1 : 0, statusCol = hasIndexCol ? 3 : 2;
   const descOverrides = {};
-  let unmatched = 0;
+  const unmatchedNames = [];
   rows.slice(1).forEach((r) => {
     if (!r || (r[nameCol] === undefined && r[0] === undefined)) return;
-    let idx;
-    if (hasIndexCol && r[0] !== undefined && r[0] !== '' && dash.dicts.jobDescriptions[parseInt(r[0], 10)] !== undefined) {
+    const exactName = String(r[nameCol] || '').trim();
+    let idx = revMap.get(exactName);
+    if (idx === undefined) idx = revMapLower.get(exactName.toLowerCase());
+    if (idx === undefined && hasIndexCol && r[0] !== undefined && r[0] !== '' && dash.dicts.jobDescriptions[parseInt(r[0], 10)] !== undefined) {
       idx = parseInt(r[0], 10);
-    } else {
-      idx = revMap.get(String(r[nameCol]).trim().toLowerCase());
     }
-    if (idx === undefined) { unmatched++; return; }
+    if (idx === undefined) { unmatchedNames.push(exactName || ('#' + r[0])); return; }
     const target = STATUS_MAP[String(r[statusCol] || '').trim().toLowerCase()];
     if (target) descOverrides[idx] = target;
   });
-  return { descOverrides, count: Object.keys(descOverrides).length, unmatched };
+  const unmatched = unmatchedNames.length;
+  return { descOverrides, count: Object.keys(descOverrides).length, unmatched, unmatchedNames };
 }

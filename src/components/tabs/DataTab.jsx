@@ -4,9 +4,10 @@ import { datasetSummary } from '../../lib/xlsxImport';
 import { loadJSON, saveJSON, KEYS } from '../../lib/storage';
 
 export function DataTab() {
-  const { idx, dataMsg, dataHistory, runImport, resetData } = useDashboard();
+  const { idx, dataMsg, dataHistory, runImport, resetData, backupAll, clearAllData, restoreBackupFile } = useDashboard();
   const usageInputRef = useRef(null);
   const employeesInputRef = useRef(null);
+  const restoreInputRef = useRef(null);
   const [usageFileName, setUsageFileName] = useState(null);
   const [employeesFileName, setEmployeesFileName] = useState(null);
   const [settings, setSettings] = useState(() => loadJSON(KEYS.settings, {}));
@@ -73,6 +74,32 @@ export function DataTab() {
         {dataMsg.error && (
           <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--amber-bg)', color: 'var(--amber-dark)', borderRadius: 8, fontSize: 12.5 }}>Erreur : {dataMsg.error}</div>
         )}
+      </div>
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Sauvegarde complète</div>
+        <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 12px' }}>
+          Exportez l'intégralité des données actuelles (usage, employés, scénarios, historique) dans un fichier
+          de sauvegarde, videz le jeu de données pour repartir de zéro, ou réimportez une sauvegarde précédente.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn btn-teal" onClick={backupAll}>Sauvegarder toutes les données</button>
+          <button
+            style={{ padding: '9px 14px', borderRadius: 7, border: '1px solid oklch(58% 0.15 25)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', background: 'white', color: 'oklch(50% 0.15 25)' }}
+            onClick={clearAllData}
+          >
+            Vider les données actuelles
+          </button>
+          <label
+            style={{ display: 'inline-block', padding: '9px 14px', borderRadius: 7, border: '1px solid oklch(85% 0.008 60)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', background: 'white', color: 'oklch(45% 0.01 60)' }}
+          >
+            Réimporter une sauvegarde
+            <input
+              type="file" accept=".json" ref={restoreInputRef} style={{ display: 'none' }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) restoreBackupFile(f); e.target.value = ''; }}
+            />
+          </label>
+        </div>
       </div>
 
       <div className="card" style={{ padding: 18, marginBottom: 16 }}>
