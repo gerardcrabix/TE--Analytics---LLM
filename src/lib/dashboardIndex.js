@@ -368,11 +368,11 @@ export function computeScenarioPlan(idx, descOverrides, includeContractors, geo,
     const inactive = d.nonOpTotal - d.nonOpActive;
     if (inactive <= 0) continue;
     const kolNames = [];
-    for (const [emailIdx, rec] of idx.byEmail) {
+    for (const rec of idx.byEmail.values()) {
       const latest = rec.latest;
       if (!latest || latest[U.JOB_DESC] !== jobDescIdx) continue;
       const sum = personSumInWindow(idx, rec, kolMonths);
-      if (sum >= kolMinPrompts) kolNames.push(rec.emp ? rec.emp[E.NAME] : idx.dash.dicts.emails[emailIdx]);
+      if (sum >= kolMinPrompts && rec.emp && rec.emp[E.NAME]) kolNames.push(rec.emp[E.NAME]);
     }
     branches.push({
       jobDescIdx, name: idx.dash.dicts.jobDescriptions[jobDescIdx] || '—', inactive,

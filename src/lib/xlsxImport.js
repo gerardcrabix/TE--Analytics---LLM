@@ -1,5 +1,9 @@
 import * as XLSX from 'xlsx';
 import { USAGE_COL, EMP_COL } from './dataModel';
+import { computeReclassInfo } from './dashboardIndex';
+
+const OP_LABEL = { operator: 'Operator', nonOperator: 'Non-Operator' };
+const STATUS_MAP = { operator: 'operator', 'non-operator': 'nonOperator', 'non operator': 'nonOperator' };
 
 /** Read an .xlsx File into an array-of-arrays (header row included), picking
  * whichever sheet actually has the expected header (some exports put a
@@ -208,4 +212,62 @@ export function datasetSummary(dash) {
     usageRows: dash.usage.length,
     monthRange: dash.months.length ? dash.months[0].label + ' → ' + dash.months[dash.months.length - 1].label : '—',
   };
+}
+
+/** Downloads a saved reclassification scenario as an .xlsx (a "Forçages"
+ * sheet listing each overridden job description's original vs. scenario
+ * status, plus a "Meta" sheet carrying the scenario name) — so it can be
+ * shared or re-imported into another browser/session. */
+export function exportScenarioXlsx(scenario, idx, geo, kolMonths, reclass) {
+  const baseline = computeReclassInfo(idx, null, geo, kolMonths, reclass, true);
+  const rows = [['Job description', 'Statut origine', 'Statut scénario']];
+  Object.entries(scenario.descOverrides || {}).forEach(([jobDescIdx, status]) => {
+    const id = parseInt(jobDescIdx, 10);
+    const d = baseline.byDesc.get(id);
+    const natural = d && d.nonOpTotal > 0 && d.total > 0 && d.total - d.nonOpTotal >= d.nonOpTotal ? 'operator' : 'nonOperator';
+    rows.push([idx.dash.dicts.jobDescriptions[id] || '#' + id, OP_LABEL[natural], OP_LABEL[status]]);
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Forçages');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['ScenarioName', scenario.name]]), 'Meta');
+  XLSX.writeFile(wb, `scenario_${scenario.name.replace(/[^a-z0-9]+/gi, '_')}.xlsx`);
+}
+
+/** Parses a scenario .xlsx (as produced by exportScenarioXlsx, or hand-built
+ * with the same two columns) into { name, descOverrides, count, unmatched }.
+ * Job description names are matched case-insensitively against the current
+ * dataset's dictionary; rows that don't match are counted but skipped. */
+export function parseScenarioXlsxFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsBinaryString(file);
+  }).then((binaryString) => {
+    const wb = XLSX.read(binaryString, { type: 'binary' });
+    let name = file.name.replace(/\.[^.]+$/, '');
+    const metaSheet = wb.Sheets['Meta'];
+    if (metaSheet) {
+      const meta = XLSX.utils.sheet_to_json(metaSheet, { header: 1 });
+      if (meta[0] && meta[0][1]) name = String(meta[0][1]);
+    }
+    const sheetName = wb.SheetNames.includes('Forçages') ? 'Forçages' : wb.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1 });
+    return { name, rows };
+  });
+}
+
+export function matchScenarioImportRows(rows, dash) {
+  const revMap = new Map();
+  dash.dicts.jobDescriptions.forEach((nm, idx) => revMap.set(String(nm).trim().toLowerCase(), idx));
+  const descOverrides = {};
+  let unmatched = 0;
+  rows.slice(1).forEach((r) => {
+    if (!r || !r[0]) return;
+    const idx = revMap.get(String(r[0]).trim().toLowerCase());
+    if (idx === undefined) { unmatched++; return; }
+    const target = STATUS_MAP[String(r[2] || '').trim().toLowerCase()];
+    if (target) descOverrides[idx] = target;
+  });
+  return { descOverrides, count: Object.keys(descOverrides).length, unmatched };
 }

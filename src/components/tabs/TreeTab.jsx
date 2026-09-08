@@ -9,6 +9,7 @@ import {
   buildTree, collectJobDescIds, computeDomainTree, computeReclassAdvice, computeReclassInfo,
   findRoot, opStatusPillStyle,
 } from '../../lib/dashboardIndex';
+import { exportScenarioXlsx } from '../../lib/xlsxImport';
 
 const OP_LABEL = { operator: 'Operator', nonOperator: 'Non-Operator' };
 
@@ -17,6 +18,7 @@ export function TreeTab() {
     idx, geo, updateGeo, kol, tree, updateTree, reclass, saveReclass, selectedEmailIdx,
     setDescOverride, forceSubtreeOverride, revertDescOverride, undoLastAction,
     saveScenario, restoreScenario, updateScenario, deleteScenario,
+    importScenarioFile, confirmImportAsNew, confirmImportOverwrite, cancelImport,
   } = useDashboard();
   const opts = useGeoOptions(idx, geo, updateGeo);
   const dash = idx.dash;
@@ -365,6 +367,31 @@ export function TreeTab() {
           <input type="text" value={scenarioName} onChange={(e) => setScenarioName(e.target.value)} placeholder="Nom du scénario…" className="field-control" style={{ flex: 1, minWidth: 0 }} />
           <button className="btn btn-primary" onClick={() => { saveScenario(scenarioName); setScenarioName(''); }}>Sauvegarder</button>
         </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'inline-block', padding: '7px 12px', borderRadius: 7, border: '1px solid var(--purple)', color: 'var(--purple)', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>
+            Importer un scénario (XLS)
+            <input type="file" accept=".xlsx,.xls" onChange={(e) => { const f = e.target.files?.[0]; if (f) importScenarioFile(f); e.target.value = ''; }} style={{ display: 'none' }} />
+          </label>
+        </div>
+        {reclass.pendingImport && (
+          <div style={{ background: 'oklch(97% 0.02 190)', border: '1px solid oklch(85% 0.03 190)', borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4, color: 'oklch(30% 0.06 190)' }}>Import prêt : {reclass.pendingImport.name}</div>
+            <div style={{ fontSize: 11, color: 'oklch(35% 0.05 190)', marginBottom: 10 }}>
+              {reclass.pendingImport.count} forçage(s) reconnu(s)
+              {reclass.pendingImport.unmatched > 0 && ` — ${reclass.pendingImport.unmatched} job description(s) non reconnue(s), ignorée(s)`}.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+              <button onClick={confirmImportAsNew} style={{ padding: '6px 10px', borderRadius: 6, border: 'none', background: 'var(--purple)', color: 'white', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Créer un nouveau scénario</button>
+              <select onChange={(e) => { if (e.target.value) confirmImportOverwrite(e.target.value); e.target.value = ''; }} className="field-control" style={{ padding: '6px 8px', fontSize: 11 }}>
+                <option value="">Écraser un scénario existant…</option>
+                {scenariosView.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              <button onClick={cancelImport} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid oklch(75% 0.01 60)', background: 'white', color: 'oklch(50% 0.01 60)', fontSize: 11, cursor: 'pointer' }}>Annuler (garder l'ancien)</button>
+            </div>
+          </div>
+        )}
+
         {scenariosView.length === 0 ? (
           <div style={{ fontSize: 11.5, color: 'var(--muted-2)' }}>Aucun scénario sauvegardé.</div>
         ) : (
@@ -374,9 +401,10 @@ export function TreeTab() {
                 <div style={{ fontWeight: 600 }}>{s.name}</div>
                 <div style={{ fontSize: 10.5, color: 'var(--muted-2)' }}>{s.dateLabel} — {s.count} forçage(s)</div>
               </div>
-              <div style={{ display: 'flex', gap: 6, flex: 'none' }}>
+              <div style={{ display: 'flex', gap: 6, flex: 'none', flexWrap: 'wrap' }}>
                 <button onClick={() => restoreScenario(s.id)} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--purple)', background: 'white', color: 'var(--purple)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Reprendre</button>
                 <button onClick={() => updateScenario(s.id)} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--teal)', background: 'white', color: 'var(--teal-dark)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Mettre à jour</button>
+                <button onClick={() => exportScenarioXlsx(reclass.scenarios.find((sc) => sc.id === s.id), idx, geo, kol.months, reclass)} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid oklch(58% 0.01 60)', background: 'white', color: 'oklch(35% 0.01 60)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Exporter</button>
                 <button onClick={() => deleteScenario(s.id)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid oklch(75% 0.01 60)', background: 'white', color: 'oklch(50% 0.01 60)', fontSize: 11, cursor: 'pointer' }}>✕</button>
               </div>
             </div>

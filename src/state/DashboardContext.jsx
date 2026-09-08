@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { createEmptyDash, isDashEmpty } from '../lib/dataModel';
 import { buildIndex } from '../lib/dashboardIndex';
-import { importUsageFile, importEmployeesFile, datasetSummary } from '../lib/xlsxImport';
+import { importUsageFile, importEmployeesFile, datasetSummary, parseScenarioXlsxFile, matchScenarioImportRows } from '../lib/xlsxImport';
 import { KEYS, loadJSON, saveJSON, removeKey } from '../lib/storage';
 
 const DEFAULT_GEO = {
@@ -11,7 +11,7 @@ const DEFAULT_GEO = {
 };
 const DEFAULT_KOL = { minPrompts: 100, months: 3, requireSameTeam: true, requireSameGeo: false, lowThreshold: 5, sortBy: 'sum', sortDir: 'desc' };
 const DEFAULT_TREE = { level: 1, search: '', selectedUserId: null, mode: 'person', domainJobFunIdx: null };
-const DEFAULT_RECLASS = { descOverrides: {}, targetPct: 80, includeContractors: true, lastAction: null, scenarios: [], newScenarioName: '' };
+const DEFAULT_RECLASS = { descOverrides: {}, targetPct: 80, includeContractors: true, lastAction: null, scenarios: [], newScenarioName: '', pendingImport: null };
 const DEFAULT_PIVOT = { dims: ['year', 'month', 'opStatus'], expanded: [] };
 const DEFAULT_SCENARIO_COMPARE = { aId: '', bId: '', planId: '' };
 
@@ -128,6 +128,39 @@ export function DashboardProvider({ children }) {
     setReclass((r) => ({ ...r, scenarios: (r.scenarios || []).filter((s) => s.id !== id) }));
   }, []);
 
+  // --- Scenario import from .xlsx (export is a synchronous download, called
+  // directly from the component with exportScenarioXlsx) ---
+  const importScenarioFile = useCallback(async (file) => {
+    const { name, rows } = await parseScenarioXlsxFile(file);
+    const { descOverrides, count, unmatched } = matchScenarioImportRows(rows, dash);
+    setReclass((r) => ({ ...r, pendingImport: { name, descOverrides, count, unmatched } }));
+  }, [dash]);
+
+  const confirmImportAsNew = useCallback(() => {
+    setReclass((r) => {
+      const p = r.pendingImport;
+      if (!p) return r;
+      const scenario = {
+        id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name: p.name, date: new Date().toISOString(),
+        descOverrides: { ...p.descOverrides }, targetPct: r.targetPct, includeContractors: r.includeContractors,
+      };
+      return { ...r, scenarios: [...(r.scenarios || []), scenario], pendingImport: null };
+    });
+  }, []);
+
+  const confirmImportOverwrite = useCallback((targetId) => {
+    setReclass((r) => {
+      const p = r.pendingImport;
+      if (!p || !targetId) return r;
+      const scenarios = (r.scenarios || []).map((s) => (s.id === targetId ? { ...s, descOverrides: { ...p.descOverrides }, date: new Date().toISOString() } : s));
+      return { ...r, scenarios, pendingImport: null };
+    });
+  }, []);
+
+  const cancelImport = useCallback(() => {
+    setReclass((r) => ({ ...r, pendingImport: null }));
+  }, []);
+
   const runImport = useCallback(async (usageFile, employeesFile) => {
     if (!usageFile && !employeesFile) {
       setDataMsg({ busy: false, message: null, error: 'Sélectionnez au moins un fichier à importer.' });
@@ -185,6 +218,7 @@ export function DashboardProvider({ children }) {
     scenarioCompare, updateScenarioCompare,
     setDescOverride, forceSubtreeOverride, revertDescOverride, undoLastAction,
     saveScenario, restoreScenario, updateScenario, deleteScenario,
+    importScenarioFile, confirmImportAsNew, confirmImportOverwrite, cancelImport,
     selectedEmailIdx, setSelectedEmailIdx, hoverCountryIdx, setHoverCountryIdx, pinnedCountryIdx, setPinnedCountryIdx,
     dataMsg, dataHistory, runImport, resetData,
     recoHistory, pushRecoEntry,
