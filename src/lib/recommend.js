@@ -1,15 +1,16 @@
 import { computeGeoAgg, computeKolCandidates } from './dashboardIndex';
 import { loadJSON, KEYS } from './storage';
 
-export function computeRecoSnapshot(idx, f, kol) {
+export function computeRecoSnapshot(idx, f, kol, includeContractors = true) {
   const opStatus = f.opStatus !== undefined ? f.opStatus : 'all';
-  const agg = computeGeoAgg(idx, { month: 'all', region: f.region, country: f.country, segment: 'all', jobFunction: f.jobFunction, bu: f.bu, operator: 'all', opStatus });
+  const year = f.year !== undefined ? f.year : 'all', month = f.month !== undefined ? f.month : 'all';
+  const agg = computeGeoAgg(idx, { year, month, region: f.region, country: f.country, segment: 'all', jobFunction: f.jobFunction, bu: f.bu, operator: 'all', opStatus }, includeContractors);
   const byOperator = {};
   ['chatgpt', 'copilot', 'telme'].forEach((op) => {
-    const a = computeGeoAgg(idx, { month: 'all', region: f.region, country: f.country, segment: 'all', jobFunction: f.jobFunction, bu: f.bu, operator: op, opStatus });
+    const a = computeGeoAgg(idx, { year, month, region: f.region, country: f.country, segment: 'all', jobFunction: f.jobFunction, bu: f.bu, operator: op, opStatus }, includeContractors);
     byOperator[op] = a.totals.prompts;
   });
-  const kols = computeKolCandidates(idx, { minPrompts: kol.minPrompts, months: kol.months, region: f.region, country: f.country, segment: 'all', jobFunction: f.jobFunction, bu: f.bu, opStatus });
+  const kols = computeKolCandidates(idx, { minPrompts: kol.minPrompts, months: kol.months, region: f.region, country: f.country, segment: 'all', jobFunction: f.jobFunction, bu: f.bu, opStatus }, includeContractors);
   return {
     headcount: agg.totals.headcount, active: agg.totals.active,
     adoptionRate: agg.totals.headcount ? Math.round((agg.totals.active / agg.totals.headcount) * 100) : 0,

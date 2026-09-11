@@ -3,15 +3,16 @@ import { opStatusPill } from '../lib/dashboardIndex';
 
 const OP_COLOR = 'var(--teal)', NONOP_COLOR = 'var(--amber)';
 
-function DomainRow({ node, depth, expanded, onToggle, onForce, onRevert }) {
+function DomainRow({ node, depth, expanded, onToggle, onForce, onRevert, highlightKey }) {
   const isLeaf = !node.children || node.children.length === 0;
   const isExpanded = expanded.has(node.key);
+  const isHighlighted = highlightKey && node.key === highlightKey;
   const natural = isLeaf ? opStatusPill(node.naturalStatus === 'operator' ? 0 : 1) : null;
   const effective = isLeaf && node.overrideValue ? opStatusPill(node.effStatus === 'operator' ? 0 : 1) : null;
 
   return (
     <>
-      <div style={{ marginLeft: depth * 22, padding: '10px 12px', borderRadius: 8, background: depth === 0 ? 'var(--panel)' : 'white', border: '1px solid var(--row-border)', marginBottom: 6 }}>
+      <div style={{ marginLeft: depth * 22, padding: '10px 12px', borderRadius: 8, background: isHighlighted ? 'oklch(94% 0.05 190)' : (depth === 0 ? 'var(--panel)' : 'white'), border: isHighlighted ? '1px solid oklch(58% 0.11 190)' : '1px solid var(--row-border)', marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {!isLeaf ? (
             <span onClick={() => onToggle(node.key)} style={{ cursor: 'pointer', fontSize: 11, color: 'var(--muted-2)', flex: 'none', width: 14 }}>{isExpanded ? '▾' : '▸'}</span>
@@ -51,17 +52,25 @@ function DomainRow({ node, depth, expanded, onToggle, onForce, onRevert }) {
         )}
       </div>
       {!isLeaf && isExpanded && node.children.map((child) => (
-        <DomainRow key={child.key} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} onForce={onForce} onRevert={onRevert} />
+        <DomainRow key={child.key} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} onForce={onForce} onRevert={onRevert} highlightKey={highlightKey} />
       ))}
     </>
   );
 }
 
-export function DomainTree({ root, onForce, onRevert }) {
+/** `expandKeys` (a Set, new reference each time) force-expands the given
+ * node keys on top of whatever's already open — used to jump straight to a
+ * domain-search result without collapsing anything the user had open.
+ * `highlightKey` briefly-but-durably highlights the jumped-to node. */
+export function DomainTree({ root, onForce, onRevert, expandKeys, highlightKey }) {
   const [expanded, setExpanded] = useState(() => new Set(root ? [root.key] : []));
   const rootKey = root && root.key;
 
   useEffect(() => { setExpanded(new Set(rootKey ? [rootKey] : [])); }, [rootKey]);
+  useEffect(() => {
+    if (!expandKeys) return;
+    setExpanded((prev) => new Set([...prev, ...expandKeys]));
+  }, [expandKeys]);
 
   const onToggle = (key) => setExpanded((prev) => {
     const next = new Set(prev);
@@ -70,5 +79,5 @@ export function DomainTree({ root, onForce, onRevert }) {
   });
 
   if (!root) return null;
-  return <div>{<DomainRow node={root} depth={0} expanded={expanded} onToggle={onToggle} onForce={onForce} onRevert={onRevert} />}</div>;
+  return <div>{<DomainRow node={root} depth={0} expanded={expanded} onToggle={onToggle} onForce={onForce} onRevert={onRevert} highlightKey={highlightKey} />}</div>;
 }

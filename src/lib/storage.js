@@ -10,6 +10,9 @@ export const KEYS = {
   reclass: 'llmDash.reclass.v1',
   recommendations: 'llmDash.recommendations.v1',
   settings: 'llmDash.settings.v1',
+  importLog: 'llmDash.lastImportLog.v1',
+  actionLog: 'llmDash.actionLog.v1',
+  branding: 'llmDash.branding.v1',
 };
 
 export function loadJSON(key, fallback) {

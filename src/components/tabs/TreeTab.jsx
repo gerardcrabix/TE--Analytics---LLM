@@ -6,8 +6,8 @@ import { Select } from '../shared/Field';
 import { OrgTree } from '../OrgTree';
 import { DomainTree } from '../DomainTree';
 import {
-  buildTree, collectJobDescIds, computeDomainTree, computeReclassAdvice, computeReclassInfo,
-  findRoot, opStatusPillStyle,
+  buildDomainSearchResults, buildTree, collectJobDescIds, computeDomainSynthesis, computeDomainTree,
+  computeReclassAdvice, computeReclassInfo, findRoot, monthOptionsFor, opStatusPillStyle,
 } from '../../lib/dashboardIndex';
 import { exportScenarioXlsx } from '../../lib/xlsxImport';
 
@@ -15,8 +15,8 @@ const OP_LABEL = { operator: 'Operator', nonOperator: 'Non-Operator' };
 
 export function TreeTab() {
   const {
-    idx, geo, updateGeo, kol, tree, updateTree, reclass, saveReclass, selectedEmailIdx,
-    setDescOverride, forceSubtreeOverride, revertDescOverride, undoLastAction,
+    idx, geo, updateGeo, kol, tree, updateTree, treeMY, updateTreeMY, reclass, saveReclass, selectedEmailIdx,
+    setDescOverride, forceSubtreeOverride, revertDescOverride, undoLastAction, applyOverrideRemap,
     saveScenario, restoreScenario, updateScenario, deleteScenario,
     importScenarioFile, confirmImportAsNew, confirmImportOverwrite, cancelImport,
   } = useDashboard();
@@ -24,6 +24,17 @@ export function TreeTab() {
   const dash = idx.dash;
   const isDomain = tree.mode === 'domain';
   const [scenarioName, setScenarioName] = useState('');
+  const [showMissingDiag, setShowMissingDiag] = useState(false);
+  const [remapPicks, setRemapPicks] = useState({});
+  const [drill, setDrill] = useState({ domain: null, family: null, all: false });
+  const [domainExpandRequest, setDomainExpandRequest] = useState(null);
+  const [domainHighlight, setDomainHighlight] = useState(null);
+
+  const treeMonthOptions = useMemo(() => monthOptionsFor(idx.dash, treeMY.year), [idx.dash, treeMY.year]);
+  const treeYearValue = treeMY.year === 'all' ? 'all' : String(treeMY.year);
+  const treeMonthValue = treeMY.month === 'all' ? 'all' : String(treeMY.month);
+  const onTreeYearChange = (e) => updateTreeMY({ year: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+  const onTreeMonthChange = (e) => updateTreeMY({ month: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
 
   const rootId = tree.selectedUserId && idx.empByUserId.has(tree.selectedUserId) ? findRoot(idx, tree.selectedUserId, tree.level) : null;
   const treeData = useMemo(() => (rootId ? buildTree(idx, rootId, geo, kol.months, kol.minPrompts, reclass) : null),
@@ -41,8 +52,24 @@ export function TreeTab() {
   }, [selectedEmp, idx, dash]);
 
   const domainJobFunIdx = tree.domainJobFunIdx;
-  const domainTree = useMemo(() => (isDomain && domainJobFunIdx !== null ? computeDomainTree(idx, domainJobFunIdx, geo, kol.months, reclass) : null),
-    [isDomain, idx, domainJobFunIdx, geo, kol.months, reclass]);
+  const domainTree = useMemo(() => (isDomain && domainJobFunIdx !== null ? computeDomainTree(idx, domainJobFunIdx, geo, kol.months, reclass, treeMY) : null),
+    [isDomain, idx, domainJobFunIdx, geo, kol.months, reclass, treeMY]);
+  const domainSynthesis = useMemo(() => (isDomain ? computeDomainSynthesis(idx, geo, kol.months, reclass, treeMY) : []),
+    [isDomain, idx, geo, kol.months, reclass, treeMY]);
+  const hasDomainSynthesis = domainSynthesis.length > 0;
+
+  const domainSearchResults = useMemo(() => buildDomainSearchResults(idx, tree.domainSearch).map((r) => ({
+    ...r,
+    onSelect: () => {
+      updateTree({ mode: 'domain', domainJobFunIdx: r.funIdx, domainSearch: '' });
+      const keys = new Set(['domain:' + r.funIdx]);
+      if (r.famIdx !== null && r.famIdx !== undefined) keys.add('fam:' + r.famIdx);
+      if (r.descIdx !== null && r.descIdx !== undefined) keys.add('desc:' + r.descIdx);
+      setDomainExpandRequest(keys);
+      setDomainHighlight(r.descIdx !== null && r.descIdx !== undefined ? 'desc:' + r.descIdx : (r.famIdx !== null && r.famIdx !== undefined ? 'fam:' + r.famIdx : null));
+    },
+  })), [idx, tree.domainSearch, updateTree]);
+  const hasDomainSearchResults = domainSearchResults.length > 0;
 
   const hasScopeData = isDomain ? domainJobFunIdx !== null : !!treeData;
   const domainLabel = domainJobFunIdx === 'all' ? 'Tous les domaines' : domainJobFunIdx !== null ? dash.dicts.jobFunctions[domainJobFunIdx] || '—' : '—';
@@ -80,8 +107,8 @@ export function TreeTab() {
     return (latest, emailIdx, rec) => rec.emp && scopeIds.has(rec.emp[1]);
   }, [isDomain, domainJobFunIdx, geo, treeData]);
 
-  const reclassInfo = useMemo(() => computeReclassInfo(idx, scopeFilter, geo, kol.months, reclass), [idx, scopeFilter, geo, kol.months, reclass]);
-  const baselineInfo = useMemo(() => computeReclassInfo(idx, scopeFilter, geo, kol.months, reclass, true), [idx, scopeFilter, geo, kol.months, reclass]);
+  const reclassInfo = useMemo(() => computeReclassInfo(idx, scopeFilter, geo, kol.months, reclass, false, undefined, treeMY), [idx, scopeFilter, geo, kol.months, reclass, treeMY]);
+  const baselineInfo = useMemo(() => computeReclassInfo(idx, scopeFilter, geo, kol.months, reclass, true, undefined, treeMY), [idx, scopeFilter, geo, kol.months, reclass, treeMY]);
 
   const afterNonOpTotal = reclassInfo.nonOpTotal, afterNonOpActive = reclassInfo.nonOpActive;
   const afterNonOpPct = reclassInfo.nonOpTotal ? Math.round((reclassInfo.nonOpActive / reclassInfo.nonOpTotal) * 100) : 0;
@@ -111,11 +138,114 @@ export function TreeTab() {
       const id = parseInt(jobDescIdx, 10);
       const d = reclassInfo.byDesc.get(id) || baselineInfo.byDesc.get(id);
       const naturalStatus = d && d.nonOpTotal > 0 && d.total > 0 && d.total - d.nonOpTotal >= d.nonOpTotal ? 'operator' : 'nonOperator';
-      return { name: dash.dicts.jobDescriptions[id] || '—', fromLabel: OP_LABEL[naturalStatus], toLabel: OP_LABEL[status], total: d ? d.total : 0, active: d ? d.active : 0 };
+      return {
+        name: dash.dicts.jobDescriptions[id] || '—', fromLabel: OP_LABEL[naturalStatus], toLabel: OP_LABEL[status],
+        total: d ? d.total : 0, active: d ? d.active : 0,
+        jobFunIdx: d ? d.jobFunIdx : null, jobFamilyIdx: d ? d.jobFamilyIdx : null,
+      };
     }), [reclass.descOverrides, reclassInfo, baselineInfo, dash]);
   const forcingRecommendation = nonOpTargetMet
     ? `L'objectif de ${reclass.targetPct}% est atteint sur ce périmètre ; documentez ces forçages avant de les proposer en révision officielle du référentiel job description.`
     : `Il reste ${reclass.targetPct - afterNonOpPct} pt d'écart après forçage ; complétez soit par d'autres reclassifications, soit par une action d'activation (formation, communication) sur les job descriptions Non-Operator restants.`;
+
+  // --- Diagnostic for overrides that don't appear in `forcedTransfers`:
+  // either dropped by the active geo/domain scope, or the job description no
+  // longer exists in the current data (renamed on a later import) — the
+  // latter can be re-attached ("orphan" remap). ---
+  const allOverrideEntries = useMemo(() => Object.entries(reclass.descOverrides || {}).filter(([, v]) => v === 'operator' || v === 'nonOperator'), [reclass.descOverrides]);
+  const shownOverrideIds = useMemo(() => new Set(allOverrideEntries.filter(([jobDescIdx]) => reclassInfo.byDesc.has(parseInt(jobDescIdx, 10)) || baselineInfo.byDesc.has(parseInt(jobDescIdx, 10))).map(([id]) => id)),
+    [allOverrideEntries, reclassInfo, baselineInfo]);
+  const missingOverrideEntries = useMemo(() => allOverrideEntries.filter(([id]) => !shownOverrideIds.has(id)), [allOverrideEntries, shownOverrideIds]);
+  const hasMissingOverrides = missingOverrideEntries.length > 0;
+  const overrideTotalCount = allOverrideEntries.length, overrideShownCount = shownOverrideIds.size;
+  const missingDiagToggleLabel = showMissingDiag ? 'Masquer le détail' : 'Pourquoi ?';
+  const globalInfo = useMemo(() => (hasMissingOverrides && showMissingDiag)
+    ? computeReclassInfo(idx, null, geo, kol.months, reclass, true, undefined, { month: 'all', year: 'all' })
+    : null, [hasMissingOverrides, showMissingDiag, idx, geo, kol.months, reclass]);
+  const missingOverrideRows = useMemo(() => {
+    if (!globalInfo) return [];
+    const jobDescOptions = dash.dicts.jobDescriptions
+      .map((label, i) => ({ value: String(i), label }))
+      .filter((o) => o.label && globalInfo.byDesc.has(parseInt(o.value, 10)))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return missingOverrideEntries.map(([id, status]) => {
+      const idNum = parseInt(id, 10);
+      const isOrphan = !globalInfo.byDesc.has(idNum);
+      const reason = isOrphan
+        ? "Introuvable dans les données actuelles — probablement un job renommé lors d'un import (voir ci-dessous pour rattacher)"
+        : 'Filtré par le mois/domaine/périmètre actif (existe dans les données mais pas sur cette sélection)';
+      return {
+        idKey: id, name: dash.dicts.jobDescriptions[idNum] || ('#' + idNum), reason, isOrphan,
+        jobDescOptions: isOrphan ? jobDescOptions : [],
+        remapValue: remapPicks[id] || '',
+        canApplyRemap: !!remapPicks[id],
+        onRemapChange: (e) => setRemapPicks((p) => ({ ...p, [id]: e.target.value })),
+        onRemapApply: () => { applyOverrideRemap(idNum, parseInt(remapPicks[id], 10), status); setRemapPicks((p) => { const n = { ...p }; delete n[id]; return n; }); },
+      };
+    });
+  }, [globalInfo, missingOverrideEntries, dash, remapPicks, applyOverrideRemap]);
+
+  // --- Domain → sub-domain (job family) → job description drill-down of
+  // every forçage, for the "Détail des transferts par domaine" panel. ---
+  const drillJobs = useMemo(() => forcedTransfers.map((t) => ({
+    name: t.name, direction: t.fromLabel + ' → ' + t.toLabel, toOp: t.toLabel === 'Operator',
+    total: t.total, active: t.active,
+    jobFunIdx: t.jobFunIdx !== null && t.jobFunIdx !== undefined ? t.jobFunIdx : -1,
+    jobFamilyIdx: t.jobFamilyIdx !== null && t.jobFamilyIdx !== undefined ? t.jobFamilyIdx : -1,
+  })), [forcedTransfers]);
+  const domainGroups = useMemo(() => {
+    const map = new Map();
+    drillJobs.forEach((j) => {
+      if (!map.has(j.jobFunIdx)) map.set(j.jobFunIdx, { jobFunIdx: j.jobFunIdx, label: j.jobFunIdx >= 0 ? (dash.dicts.jobFunctions[j.jobFunIdx] || '—') : '—', jobs: [], toOp: 0, toNonOp: 0 });
+      const g = map.get(j.jobFunIdx); g.jobs.push(j); if (j.toOp) g.toOp++; else g.toNonOp++;
+    });
+    return map;
+  }, [drillJobs, dash]);
+  const reclassDrillDomains = useMemo(() => Array.from(domainGroups.values()).sort((a, b) => b.jobs.length - a.jobs.length).map((g) => ({
+    jobFunIdx: g.jobFunIdx, label: g.label, count: g.jobs.length, toOp: g.toOp, toNonOp: g.toNonOp,
+    isOpen: drill.domain === g.jobFunIdx,
+    onToggle: () => setDrill((d) => ({ domain: d.domain === g.jobFunIdx ? null : g.jobFunIdx, family: null, all: false })),
+  })), [domainGroups, drill.domain]);
+  const reclassDrillFamilies = useMemo(() => {
+    if (drill.domain === null || drill.all) return [];
+    const dGroup = domainGroups.get(drill.domain);
+    const famMap = new Map();
+    (dGroup ? dGroup.jobs : []).forEach((j) => {
+      if (!famMap.has(j.jobFamilyIdx)) famMap.set(j.jobFamilyIdx, { jobFamilyIdx: j.jobFamilyIdx, label: j.jobFamilyIdx >= 0 ? (dash.dicts.jobFamilies[j.jobFamilyIdx] || '—') : '—', jobs: [], toOp: 0, toNonOp: 0 });
+      const g = famMap.get(j.jobFamilyIdx); g.jobs.push(j); if (j.toOp) g.toOp++; else g.toNonOp++;
+    });
+    return Array.from(famMap.values()).sort((a, b) => b.jobs.length - a.jobs.length).map((g) => ({
+      jobFamilyIdx: g.jobFamilyIdx, label: g.label, count: g.jobs.length, toOp: g.toOp, toNonOp: g.toNonOp,
+      isOpen: drill.family === g.jobFamilyIdx,
+      onToggle: () => setDrill((d) => ({ ...d, family: d.family === g.jobFamilyIdx ? null : g.jobFamilyIdx })),
+    }));
+  }, [drill, domainGroups, dash]);
+  const reclassDrillJobs = useMemo(() => {
+    if (drill.all) return drillJobs;
+    if (drill.domain !== null && drill.family !== null) {
+      const dGroup = domainGroups.get(drill.domain);
+      return (dGroup ? dGroup.jobs : []).filter((j) => j.jobFamilyIdx === drill.family);
+    }
+    return [];
+  }, [drill, drillJobs, domainGroups]);
+  const hasReclassDrillData = reclassDrillDomains.length > 0;
+  const onReclassDrillShowAll = () => setDrill({ domain: null, family: null, all: true });
+  const onReclassDrillReset = () => setDrill({ domain: null, family: null, all: false });
+
+  // --- Before/after bar-chart rows for "Écart avant / après forçage". ---
+  const mkBarRow = (label, beforePct, afterPct) => {
+    const d = afterPct - beforePct;
+    return {
+      label, beforePctLabel: beforePct + '%', afterPctLabel: afterPct + '%', beforeWidth: beforePct, afterWidth: afterPct,
+      deltaLabel: (d > 0 ? '+' : '') + d + ' pt',
+      deltaColor: d > 0 ? 'oklch(45% 0.1 190)' : (d < 0 ? 'oklch(55% 0.15 25)' : 'oklch(55% 0.01 60)'),
+    };
+  };
+  const forcingBarRows = [
+    mkBarRow('Global (tous statuts)', beforeGlobalPct, globalPct),
+    mkBarRow('Non-Operator', beforeNonOpPct, afterNonOpPct),
+    mkBarRow('Operator', beforeOpPct, afterOpPct),
+  ];
 
   const scenariosView = (reclass.scenarios || []).map((s) => ({
     id: s.id, name: s.name, count: Object.keys(s.descOverrides || {}).length,
@@ -169,6 +299,22 @@ export function TreeTab() {
           {isDomain ? (
             <>
               <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Domaine (job function)</div>
+              <div style={{ position: 'relative', marginBottom: 10 }}>
+                <input
+                  type="text" value={tree.domainSearch || ''} onChange={(e) => updateTree({ domainSearch: e.target.value })}
+                  placeholder="Rechercher un domaine / sous-domaine / job description…" className="field-control" style={{ width: '100%' }}
+                />
+                {hasDomainSearchResults && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, top: 'calc(100% + 2px)', zIndex: 5, background: 'white', border: '1px solid var(--border)', borderRadius: 7, boxShadow: '0 4px 12px rgba(0,0,0,0.08)', maxHeight: 240, overflow: 'auto' }}>
+                    {domainSearchResults.map((r) => (
+                      <div key={r.key} onClick={r.onSelect} style={{ padding: '7px 10px', cursor: 'pointer', borderBottom: '1px solid var(--row-border)' }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>{r.name}</div>
+                        <div style={{ fontSize: 10.5, color: 'var(--muted-2)' }}>{r.typeLabel}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               <Select value={domainJobFunIdx === null ? '' : String(domainJobFunIdx)} onChange={onDomainChange} style={{ marginBottom: 10 }}>
                 <option value="">Choisir un domaine…</option>
                 <option value="all">TOUS les domaines</option>
@@ -177,8 +323,8 @@ export function TreeTab() {
               <div style={{ fontSize: 11.5, color: 'var(--muted-2)', lineHeight: 1.6, marginBottom: 12 }}>L'arbre affiche la hiérarchie Domaine → Job family → Job description, avec le statut Operator/Non-Operator de chaque branche.</div>
               <GeoFilterFields opts={opts} fields={['bu', 'region', 'country', 'segment', 'opStatus']} style={{ marginBottom: 6 }} />
               <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-                <Select value={opts.geoYearValue} onChange={opts.onGeoYearChange}><option value="all">Toutes années</option>{opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
-                <Select value={opts.geoMonthValue} onChange={opts.onGeoMonthChange}><option value="all">Tous les mois</option>{opts.monthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+                <Select value={treeYearValue} onChange={onTreeYearChange}><option value="all">Toutes années</option>{opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+                <Select value={treeMonthValue} onChange={onTreeMonthChange}><option value="all">Tous les mois</option>{treeMonthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
               </div>
               {!idx.hasJobHierarchy && (
                 <div style={{ marginTop: 10, padding: '8px 10px', background: 'var(--amber-bg)', color: 'var(--amber-dark)', borderRadius: 7, fontSize: 11, lineHeight: 1.5 }}>
@@ -191,8 +337,8 @@ export function TreeTab() {
               <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Filtrer / rechercher une personne</div>
               <GeoFilterFields opts={opts} fields={['bu', 'region', 'country', 'segment', 'jobFunction', 'opStatus']} style={{ marginBottom: 6 }} />
               <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-                <Select value={opts.geoYearValue} onChange={opts.onGeoYearChange}><option value="all">Toutes années</option>{opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
-                <Select value={opts.geoMonthValue} onChange={opts.onGeoMonthChange}><option value="all">Tous les mois</option>{opts.monthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+                <Select value={treeYearValue} onChange={onTreeYearChange}><option value="all">Toutes années</option>{opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+                <Select value={treeMonthValue} onChange={onTreeMonthChange}><option value="all">Tous les mois</option>{treeMonthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
               </div>
               <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
                 <input type="text" value={tree.search} onChange={(e) => updateTree({ search: e.target.value })} placeholder="Nom…" className="field-control" style={{ flex: 1, minWidth: 0 }} />
@@ -258,7 +404,7 @@ export function TreeTab() {
 
         <div className="card" style={{ padding: 24, overflow: 'auto', minHeight: 500 }}>
           {isDomain ? (
-            domainTree ? <DomainTree root={domainTree} onForce={setDescOverride} onRevert={revertDescOverride} /> : (
+            domainTree ? <DomainTree root={domainTree} onForce={setDescOverride} onRevert={revertDescOverride} expandKeys={domainExpandRequest} highlightKey={domainHighlight} /> : (
               <div style={{ textAlign: 'center', padding: 60, fontSize: 13, color: 'var(--muted-2)' }}>Choisissez un domaine (job function) pour afficher sa cartographie de métiers.</div>
             )
           ) : (
@@ -270,6 +416,36 @@ export function TreeTab() {
           )}
         </div>
       </div>
+
+      {hasDomainSynthesis && (
+        <div className="card" style={{ padding: 18, marginBottom: 14, overflow: 'auto' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>Synthèse par domaine (avant transfert)</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ color: 'var(--muted)' }}>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>Domaine</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>Effectif</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>% Operator / pop. totale</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>% Non-Op / pop. totale</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>% actifs Operator</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>% actifs Non-Op</th>
+              </tr>
+            </thead>
+            <tbody>
+              {domainSynthesis.map((ds) => (
+                <tr key={ds.jobFunIdx} style={{ borderTop: '1px solid var(--row-border)' }}>
+                  <td style={{ padding: '6px 8px', fontWeight: 600 }}>{ds.label}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>{ds.total}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>{ds.opShareOfTotal}%</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>{ds.nonOpShareOfTotal}%</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>{ds.opActivePctLabel}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>{ds.nonOpPctLabel}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginBottom: 14 }}>
         <div className="card" style={{ padding: 18 }}>
@@ -345,12 +521,104 @@ export function TreeTab() {
               <div style={{ fontSize: 16, fontWeight: 700, color: 'oklch(35% 0.06 190)' }}>{afterOpActive} / {afterOpTotal} <span style={{ fontSize: 12, fontWeight: 600 }}>({afterOpPct}%)</span></div>
             </div>
           </div>
-          <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 6 }}>Transferts entre catégories</div>
-          <div style={{ maxHeight: 160, overflow: 'auto', marginBottom: 12 }}>
-            {forcedTransfers.map((t, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5, padding: '6px 0', borderBottom: '1px solid var(--row-border)' }}>
-                <span>{t.name} — {t.fromLabel} → {t.toLabel}</span>
-                <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{t.total} pers. ({t.active} actifs)</span>
+          {hasMissingOverrides && (
+            <div style={{ background: 'oklch(97% 0.05 55)', border: '1px solid oklch(80% 0.08 55)', borderRadius: 8, padding: '10px 12px', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'oklch(45% 0.1 55)' }}>{overrideShownCount} / {overrideTotalCount} forçages affichés ci-dessous</div>
+                <span onClick={() => setShowMissingDiag((v) => !v)} style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'oklch(45% 0.1 55)', textDecoration: 'underline' }}>{missingDiagToggleLabel}</span>
+              </div>
+              {showMissingDiag && missingOverrideRows.map((m) => (
+                <div key={m.idKey} style={{ padding: '6px 0', borderBottom: '1px solid oklch(90% 0.05 55)' }}>
+                  <div style={{ fontSize: 11, color: 'oklch(40% 0.08 55)' }}>{m.name} — {m.reason}</div>
+                  {m.isOrphan && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                      <select value={m.remapValue} onChange={m.onRemapChange} className="field-control" style={{ flex: 1, padding: '5px 8px', fontSize: 11 }}>
+                        <option value="">Rattacher à…</option>
+                        {m.jobDescOptions.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                      </select>
+                      <button onClick={m.onRemapApply} disabled={!m.canApplyRemap} style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: 'var(--purple)', color: 'white', fontSize: 11, fontWeight: 600, cursor: m.canApplyRemap ? 'pointer' : 'default', opacity: m.canApplyRemap ? 1 : 0.5 }}>Associer</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {hasReclassDrillData && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700 }}>Détail des transferts par domaine</div>
+                <span onClick={onReclassDrillShowAll} style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>Voir tout</span>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                {reclassDrillDomains.map((dg) => (
+                  <div key={dg.jobFunIdx}>
+                    <div onClick={dg.onToggle} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', cursor: 'pointer', borderTop: '1px solid var(--row-border)', background: 'white' }}>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>{dg.label}</span>
+                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>{dg.toOp} → Op · {dg.toNonOp} → Non-Op</span>
+                    </div>
+                    {dg.isOpen && (
+                      <div style={{ padding: '6px 10px 10px 20px', background: 'var(--panel)' }}>
+                        {reclassDrillFamilies.map((fg) => (
+                          <div key={fg.jobFamilyIdx}>
+                            <div onClick={fg.onToggle} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', cursor: 'pointer' }}>
+                              <span style={{ fontSize: 11.5, fontWeight: 600, color: 'oklch(35% 0.01 60)' }}>{fg.label}</span>
+                              <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>{fg.toOp} → Op · {fg.toNonOp} → Non-Op</span>
+                            </div>
+                            {fg.isOpen && (
+                              <div style={{ padding: '2px 8px 6px 14px' }}>
+                                {reclassDrillJobs.map((j, i) => (
+                                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11, padding: '5px 0', borderBottom: '1px solid var(--row-border)' }}>
+                                    <span>{j.name} — {j.direction}</span>
+                                    <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{j.total} pers. ({j.active} actifs)</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {drill.all && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700 }}>Tous les transferts</div>
+                <span onClick={onReclassDrillReset} style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>✕ Fermer</span>
+              </div>
+              <div style={{ maxHeight: 220, overflow: 'auto' }}>
+                {reclassDrillJobs.map((j, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5, padding: '6px 0', borderBottom: '1px solid var(--row-border)' }}>
+                    <span>{j.name} — {j.direction}</span>
+                    <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{j.total} pers. ({j.active} actifs)</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'oklch(35% 0.01 60)', marginBottom: 10 }}>Écart avant / après forçage</div>
+            {forcingBarRows.map((row) => (
+              <div key={row.label} style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700 }}>{row.label}</span>
+                  <span style={{ color: row.deltaColor, fontWeight: 700 }}>{row.deltaLabel}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                  <span style={{ fontSize: 10, color: 'var(--muted-2)', width: 42, flex: 'none' }}>Avant</span>
+                  <div style={{ flex: 1, height: 14, background: 'var(--panel)', borderRadius: 4, overflow: 'hidden' }}><div style={{ height: '100%', width: row.beforeWidth + '%', background: 'oklch(70% 0.02 60)', borderRadius: 4 }} /></div>
+                  <span style={{ fontSize: 11, fontWeight: 700, width: 36, textAlign: 'right', flex: 'none' }}>{row.beforePctLabel}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 10, color: 'oklch(35% 0.06 190)', width: 42, flex: 'none' }}>Après</span>
+                  <div style={{ flex: 1, height: 14, background: 'var(--panel)', borderRadius: 4, overflow: 'hidden' }}><div style={{ height: '100%', width: row.afterWidth + '%', background: 'oklch(58% 0.11 190)', borderRadius: 4 }} /></div>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'oklch(35% 0.06 190)', width: 36, textAlign: 'right', flex: 'none' }}>{row.afterPctLabel}</span>
+                </div>
               </div>
             ))}
           </div>

@@ -6,14 +6,19 @@ import { OpPill } from '../shared/OpPill';
 import { computeInfluence, computeKolCandidates, countryLabel, fmt, opStatusPill } from '../../lib/dashboardIndex';
 
 export function KolTab() {
-  const { idx, geo, updateGeo, kol, updateKol, selectedEmailIdx, setSelectedEmailIdx } = useDashboard();
+  const { idx, geo, updateGeo, kol, updateKol, reclass, saveReclass, selectedEmailIdx, setSelectedEmailIdx } = useDashboard();
   const opts = useGeoOptions(idx, geo, updateGeo);
   const dash = idx.dash;
 
-  const kolCandidatesRaw = useMemo(() => computeKolCandidates(idx, {
+  const kolCandidatesRaw0 = useMemo(() => computeKolCandidates(idx, {
     minPrompts: kol.minPrompts, months: kol.months, region: geo.region, country: geo.country,
     segment: geo.segment, jobFunction: geo.jobFunction, bu: geo.bu, opStatus: geo.opStatus,
-  }), [idx, kol.minPrompts, kol.months, geo.region, geo.country, geo.segment, geo.jobFunction, geo.bu, geo.opStatus]);
+  }, reclass.includeContractors), [idx, kol.minPrompts, kol.months, geo.region, geo.country, geo.segment, geo.jobFunction, geo.bu, geo.opStatus, reclass.includeContractors]);
+
+  const kolNameSearch = (kol.nameSearch || '').trim().toLowerCase();
+  const kolCandidatesRaw = useMemo(() => (
+    kolNameSearch ? kolCandidatesRaw0.filter((c) => (c.name || '').toLowerCase().includes(kolNameSearch)) : kolCandidatesRaw0
+  ), [kolCandidatesRaw0, kolNameSearch]);
 
   const kolSortBy = kol.sortBy || 'sum', kolSortDir = kol.sortDir || 'desc';
   const kolCandidates = useMemo(() => {
@@ -38,13 +43,13 @@ export function KolTab() {
     const rec = idx.byEmail.get(selectedEmailIdx);
     const latest = rec.latest;
     if (!latest) return null;
-    return { emailIdx: selectedEmailIdx, name: rec.emp ? rec.emp[2] : dash.dicts.emails[selectedEmailIdx], countryIdx: latest[2], jobFunIdx: latest[6] };
+    return { emailIdx: selectedEmailIdx, name: rec.emp ? rec.emp[2] : dash.dicts.emails[selectedEmailIdx], countryIdx: latest[2], jobFunIdx: latest[6], jobDescIdx: latest[12] };
   }, [selectedEmailIdx, idx, dash]);
 
   const influenceRows = useMemo(() => {
     if (!selectedKol) return [];
-    return computeInfluence(idx, selectedKol, { requireSameTeam: kol.requireSameTeam, requireSameGeo: kol.requireSameGeo, lowThreshold: kol.lowThreshold, months: kol.months });
-  }, [idx, selectedKol, kol.requireSameTeam, kol.requireSameGeo, kol.lowThreshold, kol.months]);
+    return computeInfluence(idx, selectedKol, { requireSameTeam: kol.requireSameTeam, requireSameGeo: kol.requireSameGeo, requireSameJob: kol.requireSameJob, lowThreshold: kol.lowThreshold, months: kol.months });
+  }, [idx, selectedKol, kol.requireSameTeam, kol.requireSameGeo, kol.requireSameJob, kol.lowThreshold, kol.months]);
 
   return (
     <div>
@@ -65,7 +70,15 @@ export function KolTab() {
 
           <div style={{ height: 1, background: 'var(--border)', margin: '4px 0 14px' }} />
           <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Filtrer les candidats</div>
+          <input
+            type="text" value={kol.nameSearch || ''} onChange={(e) => updateKol({ nameSearch: e.target.value })}
+            placeholder="Rechercher un nom…" className="field-control" style={{ width: '100%', marginBottom: 8 }}
+          />
           <GeoFilterFields opts={opts} fields={['bu', 'region', 'country', 'segment', 'jobFunction', 'opStatus']} style={{ marginBottom: 8 }} selectStyle={{ width: '100%' }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--muted)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={reclass.includeContractors} onChange={(e) => saveReclass({ includeContractors: e.target.checked })} />
+            Inclure les Contractors
+          </label>
           <div style={{ marginTop: 16, fontSize: 11, color: 'var(--muted-2)' }}>{kolCandidatesRaw.length} candidat(s) trouvé(s)</div>
         </div>
 
@@ -114,6 +127,9 @@ export function KolTab() {
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
               <input type="checkbox" checked={kol.requireSameGeo} onChange={(e) => updateKol({ requireSameGeo: e.target.checked })} /> Même pays
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
+              <input type="checkbox" checked={kol.requireSameJob} onChange={(e) => updateKol({ requireSameJob: e.target.checked })} /> Même job description
             </label>
             <div style={{ flex: 1, minWidth: 180 }}>
               <label className="field-label">Seuil "faible usage" : &lt; {kol.lowThreshold} prompts</label>

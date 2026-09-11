@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { createEmptyDash, isDashEmpty } from '../lib/dataModel';
 import { buildIndex } from '../lib/dashboardIndex';
-import { importUsageFile, importEmployeesFile, datasetSummary, parseScenarioXlsxFile, matchScenarioImportRows } from '../lib/xlsxImport';
+import { importUsageFile, importEmployeesFile, datasetSummary, parseScenarioXlsxFile, matchScenarioImportRows, repairDash } from '../lib/xlsxImport';
 import { KEYS, loadJSON, saveJSON, removeKey } from '../lib/storage';
 
 const DEFAULT_GEO = {
@@ -9,16 +9,19 @@ const DEFAULT_GEO = {
   bu: 'all', operator: 'all', opStatus: 'all', metric: 'activeShare', sizeMetric: 'headcount',
   sortBy: 'share', sortDir: 'desc', view: 'globe',
 };
-const DEFAULT_KOL = { minPrompts: 100, months: 3, requireSameTeam: true, requireSameGeo: false, lowThreshold: 5, sortBy: 'sum', sortDir: 'desc' };
-const DEFAULT_TREE = { level: 1, search: '', selectedUserId: null, mode: 'person', domainJobFunIdx: null };
+const DEFAULT_KOL = { minPrompts: 100, months: 3, requireSameTeam: true, requireSameGeo: false, requireSameJob: false, nameSearch: '', lowThreshold: 5, sortBy: 'sum', sortDir: 'desc' };
+const DEFAULT_TREE = { level: 1, search: '', selectedUserId: null, mode: 'person', domainJobFunIdx: null, domainSearch: '' };
 const DEFAULT_RECLASS = { descOverrides: {}, targetPct: 80, includeContractors: true, lastAction: null, scenarios: [], newScenarioName: '', pendingImport: null };
 const DEFAULT_PIVOT = { dims: ['year', 'month', 'opStatus'], expanded: [] };
 const DEFAULT_SCENARIO_COMPARE = { aId: '', bId: '', planId: '' };
+const DEFAULT_MY = { month: 'all', year: 'all' };
+const DEFAULT_REPORT = { scenarioId: 'current' };
+const DEFAULT_TIMELINE = { scenarioId: '', view: 'all' };
 
 const DashboardContext = createContext(null);
 
 export function DashboardProvider({ children }) {
-  const [dash, setDash] = useState(() => loadJSON(KEYS.data, null) || createEmptyDash());
+  const [dash, setDash] = useState(() => repairDash(loadJSON(KEYS.data, null) || createEmptyDash()));
   const [tab, setTab] = useState('geo');
   const [geo, setGeo] = useState(DEFAULT_GEO);
   const [kol, setKol] = useState(DEFAULT_KOL);
@@ -32,8 +35,24 @@ export function DashboardProvider({ children }) {
   const [dataMsg, setDataMsg] = useState({ busy: false, message: null, error: null });
   const [dataHistory, setDataHistory] = useState(() => loadJSON(KEYS.dataHistory, []));
   const [recoHistory, setRecoHistory] = useState(() => loadJSON(KEYS.recommendations, []));
+  // Per-tab year/month scopes, decoupled from the shared `geo` filters used
+  // by the Carte mondiale / KOL tabs — each tab keeps its own so switching
+  // one doesn't silently re-scope the others.
+  const [treeMY, setTreeMY] = useState(DEFAULT_MY);
+  const [recoMY, setRecoMY] = useState(DEFAULT_MY);
+  const [pivotMY, setPivotMY] = useState(DEFAULT_MY);
+  const [scenarioMY, setScenarioMY] = useState(DEFAULT_MY);
+  const [timelineMY, setTimelineMY] = useState(DEFAULT_MY);
+  const [reportMY, setReportMY] = useState(DEFAULT_MY);
+  const [report, setReport] = useState(DEFAULT_REPORT);
+  const [timeline, setTimeline] = useState(DEFAULT_TIMELINE);
+  const [importLog, setImportLog] = useState(() => loadJSON(KEYS.importLog, null));
+  const [showImportLog, setShowImportLog] = useState(false);
+  const [actionLog, setActionLog] = useState(() => loadJSON(KEYS.actionLog, []));
+  const [branding, setBrandingState] = useState(() => loadJSON(KEYS.branding, null));
 
   const idx = useMemo(() => buildIndex(dash), [dash]);
+  const months = dash.months;
 
   useEffect(() => { saveJSON(KEYS.data, dash); }, [dash]);
   useEffect(() => { saveJSON(KEYS.reclass, reclass); }, [reclass]);
@@ -44,6 +63,26 @@ export function DashboardProvider({ children }) {
   const saveReclass = useCallback((patch) => setReclass((r) => ({ ...r, ...patch })), []);
   const updatePivot = useCallback((patch) => setPivot((p) => ({ ...p, ...(typeof patch === 'function' ? patch(p) : patch) })), []);
   const updateScenarioCompare = useCallback((patch) => setScenarioCompare((s) => ({ ...s, ...patch })), []);
+  const updateReport = useCallback((patch) => setReport((r) => ({ ...r, ...patch })), []);
+  const updateTimeline = useCallback((patch) => setTimeline((t) => ({ ...t, ...patch })), []);
+
+  // Generic setter for the per-tab month/year pairs above: picking a year
+  // resets the month back to "all" if the currently-selected month isn't
+  // part of that year (avoids landing on an impossible year/month pair).
+  const makeMYUpdater = useCallback((setter) => (patch) => {
+    setter((cur) => {
+      let year = 'year' in patch ? patch.year : cur.year;
+      let month = 'month' in patch ? patch.month : cur.month;
+      if ('year' in patch && year !== 'all' && month !== 'all' && months[month] && months[month].year !== year) month = 'all';
+      return { month, year };
+    });
+  }, [months]);
+  const updateTreeMY = useMemo(() => makeMYUpdater(setTreeMY), [makeMYUpdater]);
+  const updateRecoMY = useMemo(() => makeMYUpdater(setRecoMY), [makeMYUpdater]);
+  const updatePivotMY = useMemo(() => makeMYUpdater(setPivotMY), [makeMYUpdater]);
+  const updateScenarioMY = useMemo(() => makeMYUpdater(setScenarioMY), [makeMYUpdater]);
+  const updateTimelineMY = useMemo(() => makeMYUpdater(setTimelineMY), [makeMYUpdater]);
+  const updateReportMY = useMemo(() => makeMYUpdater(setReportMY), [makeMYUpdater]);
 
   // --- Job-description Operator/Non-Operator overrides, with one-step undo ---
   const setDescOverride = useCallback((jobDescIdx, status) => {
@@ -65,6 +104,19 @@ export function DashboardProvider({ children }) {
       const next = { ...current };
       jobDescIds.forEach((id) => { next[id] = status; });
       return { ...r, descOverrides: next, lastAction: { type: 'bulk', prevValues } };
+    });
+  }, []);
+
+  // Re-attaches an "orphan" override (a forçage whose job description no
+  // longer exists in the current data, typically because it was renamed on
+  // a later import) onto a different, currently-valid job description.
+  const applyOverrideRemap = useCallback((oldIdx, newIdx, status) => {
+    if (Number.isNaN(newIdx)) return;
+    setReclass((r) => {
+      const next = { ...(r.descOverrides || {}) };
+      delete next[oldIdx];
+      next[newIdx] = status;
+      return { ...r, descOverrides: next };
     });
   }, []);
 
@@ -167,32 +219,41 @@ export function DashboardProvider({ children }) {
       return;
     }
     setDataMsg({ busy: true, message: null, error: null });
+    await new Promise((r) => setTimeout(r, 30)); // laisse le bouton "Import en cours…" s'afficher avant le travail lourd
+    const t0 = Date.now();
     try {
       const prevSummary = datasetSummary(dash);
       let nextDash = dash;
-      let usageAdded = 0, usageUpdated = 0, newMonths = [];
+      let usageAdded = 0, usageUpdated = 0, newMonths = [], usageLog = null;
       if (usageFile) {
         const r = await importUsageFile(usageFile, nextDash);
-        nextDash = r.dash; usageAdded = r.usageAdded; usageUpdated = r.usageUpdated; newMonths = r.newMonths;
+        nextDash = r.dash; usageAdded = r.usageAdded; usageUpdated = r.usageUpdated; newMonths = r.newMonths; usageLog = r.log;
       }
-      let employeesReplaced = false, employeesCount = nextDash.employees.length;
+      let employeesReplaced = false, employeesCount = nextDash.employees.length, employeesLog = null;
       if (employeesFile) {
         const r = await importEmployeesFile(employeesFile, nextDash);
-        nextDash = r.dash; employeesReplaced = true; employeesCount = r.employeesCount;
+        nextDash = r.dash; employeesReplaced = true; employeesCount = r.employeesCount; employeesLog = r.log;
       }
+      nextDash = repairDash(nextDash);
       setDash(nextDash);
-      const entry = { ts: Date.now(), usageAdded, usageUpdated, newMonths, employeesReplaced, employeesCount, prevSummary };
+      const durationMs = Date.now() - t0;
+      const entry = { ts: Date.now(), durationMs, usageAdded, usageUpdated, newMonths, employeesReplaced, employeesCount, prevSummary, usage: usageLog, employees: employeesLog };
       setDataHistory((h) => {
         const next = [...h, entry];
         saveJSON(KEYS.dataHistory, next);
         return next;
       });
-      const msg = `Import réussi : ${usageAdded} nouvelle(s) ligne(s) d'usage, ${usageUpdated} mise(s) à jour${newMonths.length ? ', nouveaux mois : ' + newMonths.join(', ') : ''}${employeesReplaced ? ', référentiel employés remplacé (' + employeesCount + ' personnes)' : ''}.`;
+      setImportLog(entry);
+      saveJSON(KEYS.importLog, entry);
+      const rejectNote = usageLog && usageLog.rowsRejected ? `. ⚠ ${usageLog.rowsRejected} ligne(s) usage rejetée(s) — voir le journal d'import.` : '';
+      const msg = `Import réussi (${(durationMs / 1000).toFixed(1)}s) : ${usageAdded} nouvelle(s) ligne(s) d'usage, ${usageUpdated} mise(s) à jour${newMonths.length ? ', nouveaux mois : ' + newMonths.join(', ') : ''}${employeesReplaced ? ', référentiel employés remplacé (' + employeesCount + ' personnes)' : ''}${rejectNote}`;
       setDataMsg({ busy: false, message: msg, error: null });
     } catch (e) {
       setDataMsg({ busy: false, message: null, error: String((e && e.message) || e) });
     }
   }, [dash]);
+
+  const toggleImportLog = useCallback(() => setShowImportLog((v) => !v), []);
 
   const resetData = useCallback(() => {
     removeKey(KEYS.data);
@@ -233,7 +294,7 @@ export function DashboardProvider({ children }) {
       try {
         const backup = JSON.parse(ev.target.result);
         if (!backup || backup.type !== 'llmDashBackup' || !backup.dash) throw new Error('Fichier de sauvegarde invalide.');
-        setDash(backup.dash);
+        setDash(repairDash(backup.dash));
         if (backup.reclass) setReclass((r) => ({ ...r, ...backup.reclass, pendingImport: null }));
         if (backup.dataHistory) { setDataHistory(backup.dataHistory); saveJSON(KEYS.dataHistory, backup.dataHistory); }
         if (backup.recoHistory) { setRecoHistory(backup.recoHistory); saveJSON(KEYS.recommendations, backup.recoHistory); }
@@ -253,19 +314,60 @@ export function DashboardProvider({ children }) {
     });
   }, []);
 
+  // --- Action log: "we already launched this" entries, so the Rapport tab
+  // doesn't re-propose an action plan item that's already underway. ---
+  const addActionLogEntry = useCallback((scope, action, date) => {
+    const trimmedScope = (scope || '').trim(), trimmedAction = (action || '').trim();
+    if (!trimmedScope || !trimmedAction) return;
+    setActionLog((list) => {
+      const next = [...list, { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), date: date || new Date().toISOString().slice(0, 10), scope: trimmedScope, action: trimmedAction }];
+      saveJSON(KEYS.actionLog, next);
+      return next;
+    });
+  }, []);
+
+  const removeActionLogEntry = useCallback((id) => {
+    setActionLog((list) => {
+      const next = list.filter((x) => x.id !== id);
+      saveJSON(KEYS.actionLog, next);
+      return next;
+    });
+  }, []);
+
+  // --- Report branding: colors/font/logo extracted from an uploaded .pptx
+  // template, reused when generating the Rapport tab's .pptx export. ---
+  const setBranding = useCallback((next) => {
+    setBrandingState(next);
+    try { saveJSON(KEYS.branding, next); } catch {
+      // Cover image can be large — retry without it rather than losing colors/font/logo.
+      try { saveJSON(KEYS.branding, { ...next, coverBg: null }); } catch { /* localStorage full — keep in-memory only */ }
+    }
+  }, []);
+
+  const clearBranding = useCallback(() => {
+    removeKey(KEYS.branding);
+    setBrandingState(null);
+  }, []);
+
   const value = {
     dash, idx, hasData: !isDashEmpty(dash),
     tab, setTab,
     geo, updateGeo, kol, updateKol, tree, updateTree,
     reclass, saveReclass, pivot, updatePivot,
     scenarioCompare, updateScenarioCompare,
-    setDescOverride, forceSubtreeOverride, revertDescOverride, undoLastAction,
+    setDescOverride, forceSubtreeOverride, revertDescOverride, undoLastAction, applyOverrideRemap,
     saveScenario, restoreScenario, updateScenario, deleteScenario,
     importScenarioFile, confirmImportAsNew, confirmImportOverwrite, cancelImport,
     selectedEmailIdx, setSelectedEmailIdx, hoverCountryIdx, setHoverCountryIdx, pinnedCountryIdx, setPinnedCountryIdx,
     dataMsg, dataHistory, runImport, resetData,
     backupAll, clearAllData, restoreBackupFile,
     recoHistory, pushRecoEntry,
+    treeMY, updateTreeMY, recoMY, updateRecoMY, pivotMY, updatePivotMY,
+    scenarioMY, updateScenarioMY, timelineMY, updateTimelineMY, reportMY, updateReportMY,
+    report, updateReport, timeline, updateTimeline,
+    importLog, showImportLog, toggleImportLog,
+    actionLog, addActionLogEntry, removeActionLogEntry,
+    branding, setBranding, clearBranding,
   };
 
   return <DashboardContext.Provider value={value}>{children}</DashboardContext.Provider>;

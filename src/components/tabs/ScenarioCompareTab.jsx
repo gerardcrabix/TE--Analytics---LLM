@@ -1,30 +1,50 @@
 import { useMemo } from 'react';
 import { useDashboard } from '../../state/DashboardContext';
-import { computeReclassInfo, computeScenarioPlan } from '../../lib/dashboardIndex';
+import { useGeoOptions } from '../../hooks/useGeoOptions';
+import { GeoFilterFields } from '../shared/GeoFilterFields';
+import { Field, Select } from '../shared/Field';
+import { computeReclassInfo, computeScenarioPlan, monthOptionsFor } from '../../lib/dashboardIndex';
 
 const OP_LABEL = { operator: 'Operator', nonOperator: 'Non-Operator' };
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const CURRENT_SCENARIO = { id: 'current', name: 'Situation actuelle', descOverrides: {} };
 
 export function ScenarioCompareTab() {
-  const { idx, geo, kol, reclass, scenarioCompare, updateScenarioCompare } = useDashboard();
+  const { idx, geo, updateGeo, kol, reclass, saveReclass, scenarioCompare, updateScenarioCompare, scenarioMY, updateScenarioMY } = useDashboard();
+  const opts = useGeoOptions(idx, geo, updateGeo);
   const dash = idx.dash;
   const scenarios = reclass.scenarios || [];
+
+  const scenarioMonthOptions = useMemo(() => monthOptionsFor(idx.dash, scenarioMY.year), [idx.dash, scenarioMY.year]);
+  const scenarioYearValue = scenarioMY.year === 'all' ? 'all' : String(scenarioMY.year);
+  const scenarioMonthValue = scenarioMY.month === 'all' ? 'all' : String(scenarioMY.month);
+  const onScenarioYearChange = (e) => updateScenarioMY({ year: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+  const onScenarioMonthChange = (e) => updateScenarioMY({ month: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+
+  const scopeFilter = useMemo(() => (latest) => {
+    if (geo.region !== 'all' && latest[3] !== geo.region) return false;
+    if (geo.country !== 'all' && latest[2] !== geo.country) return false;
+    if (geo.segment !== 'all' && latest[4] !== geo.segment) return false;
+    if (geo.jobFunction !== 'all' && latest[6] !== geo.jobFunction) return false;
+    if (geo.bu !== 'all' && latest[13] !== geo.bu) return false;
+    return true;
+  }, [geo]);
 
   const planScenario = scenarioCompare.planId === 'current' ? { name: 'Situation actuelle' } : scenarios.find((s) => s.id === scenarioCompare.planId);
   const planOverrides = scenarioCompare.planId === 'current' ? reclass.descOverrides || {} : planScenario ? planScenario.descOverrides : null;
   const scenarioActionPlans = useMemo(
-    () => (planOverrides ? computeScenarioPlan(idx, planOverrides, reclass.includeContractors, geo, kol.months, kol.minPrompts) : []),
-    [idx, planOverrides, reclass.includeContractors, geo, kol.months, kol.minPrompts]
+    () => (planOverrides ? computeScenarioPlan(idx, planOverrides, reclass.includeContractors, geo, kol.months, kol.minPrompts, scenarioMY) : []),
+    [idx, planOverrides, reclass.includeContractors, geo, kol.months, kol.minPrompts, scenarioMY]
   );
 
-  const scenarioA = scenarios.find((s) => s.id === scenarioCompare.aId);
-  const scenarioB = scenarios.find((s) => s.id === scenarioCompare.bId);
+  const scenarioA = scenarioCompare.aId === 'current' ? CURRENT_SCENARIO : scenarios.find((s) => s.id === scenarioCompare.aId);
+  const scenarioB = scenarioCompare.bId === 'current' ? CURRENT_SCENARIO : scenarios.find((s) => s.id === scenarioCompare.bId);
   const hasComparison = !!(scenarioA && scenarioB);
 
   const compare = useMemo(() => {
     if (!hasComparison) return null;
-    const infoA = computeReclassInfo(idx, null, geo, kol.months, { includeContractors: reclass.includeContractors, descOverrides: scenarioA.descOverrides }, false, scenarioA.descOverrides);
-    const infoB = computeReclassInfo(idx, null, geo, kol.months, { includeContractors: reclass.includeContractors, descOverrides: scenarioB.descOverrides }, false, scenarioB.descOverrides);
+    const infoA = computeReclassInfo(idx, scopeFilter, geo, kol.months, { includeContractors: reclass.includeContractors, descOverrides: scenarioA.descOverrides }, scenarioA.id === 'current', scenarioA.descOverrides, scenarioMY);
+    const infoB = computeReclassInfo(idx, scopeFilter, geo, kol.months, { includeContractors: reclass.includeContractors, descOverrides: scenarioB.descOverrides }, scenarioB.id === 'current', scenarioB.descOverrides, scenarioMY);
     const allIds = new Set([...Object.keys(scenarioA.descOverrides || {}), ...Object.keys(scenarioB.descOverrides || {})]);
     const diffs = [...allIds]
       .filter((id) => (scenarioA.descOverrides[id] || null) !== (scenarioB.descOverrides[id] || null))
@@ -45,16 +65,39 @@ export function ScenarioCompareTab() {
       ? `${toOperator} job description(s) reclassé(s) en Operator dans ${scenarioB.name} — confirmez ce changement avec les managers concernés avant de le faire remonter au référentiel officiel.`
       : "Aucun reclassement supplémentaire vers Operator.";
     return { infoA, infoB, diffs, comment, actionNonOp, actionOp };
-  }, [hasComparison, idx, geo, kol.months, reclass.includeContractors, scenarioA, scenarioB, dash]);
+  }, [hasComparison, idx, scopeFilter, geo, kol.months, reclass.includeContractors, scenarioA, scenarioB, scenarioMY, dash]);
 
   return (
     <div>
       <h1 className="h1-title">Comparer 2 scénarios</h1>
-      <p className="h1-sub">Sélectionnez deux scénarios sauvegardés (onglet Managérial / Domaine) pour comparer leur impact et obtenir un plan d'action différencié.</p>
+      <p className="h1-sub">Comparez la situation actuelle (sans reclassification) ou deux scénarios sauvegardés, sur un périmètre filtré.</p>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+        <Field label="Année">
+          <Select value={scenarioYearValue} onChange={onScenarioYearChange} style={{ minWidth: 100 }}>
+            <option value="all">Toutes années</option>
+            {opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
+        </Field>
+        <Field label="Mois">
+          <Select value={scenarioMonthValue} onChange={onScenarioMonthChange} style={{ minWidth: 140 }}>
+            <option value="all">Tous les mois (cumul)</option>
+            {scenarioMonthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
+        </Field>
+        <GeoFilterFields opts={opts} fields={['bu', 'region', 'country', 'segment', 'jobFunction']} />
+        <Field label="">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={reclass.includeContractors} onChange={(e) => saveReclass({ includeContractors: e.target.checked })} />
+            Inclure les Contractors
+          </label>
+        </Field>
+      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
         <select value={scenarioCompare.aId} onChange={(e) => updateScenarioCompare({ aId: e.target.value })} className="field-control" style={{ width: '100%' }}>
           <option value="">Scénario A…</option>
+          <option value="current">Situation actuelle (sans reclassification)</option>
           {scenarios.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
         <select value={scenarioCompare.bId} onChange={(e) => updateScenarioCompare({ bId: e.target.value })} className="field-control" style={{ width: '100%' }}>

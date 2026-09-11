@@ -21,15 +21,15 @@ function loadWorldFeatures() {
  * prototype's d3 rendering. Rotation is kept in a ref (not React state) so
  * dragging stays smooth — only the redraw touches the DOM directly, exactly
  * like the original. */
-export const WorldMap = forwardRef(function WorldMap({ idx, geo, countryCentroids, pinnedCountryIdx, onHoverCountry, onSelectCountry }, ref) {
+export const WorldMap = forwardRef(function WorldMap({ idx, geo, countryCentroids, pinnedCountryIdx, includeContractors = true, onHoverCountry, onSelectCountry }, ref) {
   const containerRef = useRef(null);
   const rotationRef = useRef([10, -20]);
   const worldFeaturesRef = useRef(null);
   const svgSelRef = useRef(null);
   const projectionRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
-  const latestPropsRef = useRef({ idx, geo, countryCentroids, pinnedCountryIdx });
-  latestPropsRef.current = { idx, geo, countryCentroids, pinnedCountryIdx };
+  const latestPropsRef = useRef({ idx, geo, countryCentroids, pinnedCountryIdx, includeContractors });
+  latestPropsRef.current = { idx, geo, countryCentroids, pinnedCountryIdx, includeContractors };
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +45,7 @@ export const WorldMap = forwardRef(function WorldMap({ idx, geo, countryCentroid
   function drawFrame() {
     const container = containerRef.current;
     if (!container || !worldFeaturesRef.current) return;
-    const { idx, geo, countryCentroids, pinnedCountryIdx } = latestPropsRef.current;
+    const { idx, geo, countryCentroids, pinnedCountryIdx, includeContractors } = latestPropsRef.current;
     const width = container.clientWidth || 800, height = 500;
     let svg = d3.select(container).select('svg');
     if (svg.empty()) {
@@ -80,7 +80,7 @@ export const WorldMap = forwardRef(function WorldMap({ idx, geo, countryCentroid
       .attr('d', path).attr('fill', 'oklch(90% 0.008 150)').attr('stroke', 'oklch(82% 0.008 150)').attr('stroke-width', 0.5);
     countries.exit().remove();
 
-    const agg = computeGeoAgg(idx, geo);
+    const agg = computeGeoAgg(idx, geo, includeContractors);
     const rows = [];
     for (const [countryIdx, c] of agg.byCountry) {
       const code = idx.dash.dicts.countries[countryIdx];
@@ -126,7 +126,7 @@ export const WorldMap = forwardRef(function WorldMap({ idx, geo, countryCentroid
   useEffect(() => {
     drawFrame();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, geo, countryCentroids, pinnedCountryIdx]);
+  }, [idx, geo, countryCentroids, pinnedCountryIdx, includeContractors]);
 
   useEffect(() => {
     const onResize = () => drawFrame();

@@ -24,7 +24,13 @@ export function readWorkbookRows(file, requiredHeaderLower) {
           if (match) sheetName = match;
         }
         const sheet = wb.Sheets[sheetName];
-        resolve(XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null }));
+        let rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+        // Some exports declare a bloated used-range (up to Excel's row limit) far beyond the
+        // real data — trim trailing rows that are entirely empty so counts/logs reflect reality.
+        let lastNonEmpty = rows.length - 1;
+        while (lastNonEmpty >= 0 && (!rows[lastNonEmpty] || rows[lastNonEmpty].every((c) => c === null || c === undefined || String(c).trim() === ''))) lastNonEmpty--;
+        rows = rows.slice(0, lastNonEmpty + 1);
+        resolve(rows);
       } catch (err) {
         reject(err);
       }
@@ -34,14 +40,92 @@ export function readWorkbookRows(file, requiredHeaderLower) {
   });
 }
 
-/** Some Usage LLM exports carry mojibake (broken-encoding) job labels.
- * Neutralizing non-ASCII characters keeps dictionary keys stable across
+/** Repairs the classic "UTF-8 bytes misread as Latin-1" corruption (é → Ã©)
+ * some export tools produce, without touching text that is already correctly
+ * encoded. */
+export function fixMojibake(s) {
+  if (!s || !/[ÂÃâã]/.test(s)) return s;
+  try {
+    const bytes = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      if (code > 0xFF) return s;
+      bytes[i] = code;
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return s;
+  }
+}
+
+/** Some Usage LLM exports carry mojibake (broken-encoding) job labels, or
+ * stray double spaces. Normalizing keeps dictionary keys stable across
  * imports instead of silently duplicating the same job description under
  * two different byte sequences. */
 function cleanLabel(s) {
   if (!s) return s;
-  // eslint-disable-next-line no-control-regex -- \x00 is intentional: this strips everything outside printable ASCII.
-  return s.replace(/[^\x00-\x7F]/g, 'A');
+  return fixMojibake(s.replace(/\s+/g, ' ').trim());
+}
+
+/** Repairs job-hierarchy labels already sitting in a loaded `dash` (imported
+ * before this mojibake fix existed) — run once whenever a dataset is loaded
+ * or restored, not just at import time. */
+export function repairMojibakeInDicts(dash) {
+  if (!dash || !dash.dicts) return dash;
+  let changed = false;
+  const dicts = { ...dash.dicts };
+  ['jobFamilies', 'jobFunctionDescriptions', 'jobDescriptions'].forEach((key) => {
+    if (!Array.isArray(dicts[key])) return;
+    const next = dicts[key].map((v) => {
+      const fixed = fixMojibake(v);
+      if (fixed !== v) changed = true;
+      return fixed;
+    });
+    dicts[key] = next;
+  });
+  return changed ? { ...dash, dicts } : dash;
+}
+
+/** Older imports could bind "Operator" to whichever dictionary index the
+ * source file happened to list first, but every read site compares
+ * opStatusIdx to the literal 0/1 — reindex to the canonical
+ * 0=Operator/1=Non-Operator convention using the strings themselves as
+ * ground truth, remapping every usage row that referenced the old indices. */
+export function repairOperatorStatusIndices(dash) {
+  const arr = dash && dash.dicts && dash.dicts.operatorStatuses;
+  if (!Array.isArray(arr)) return dash;
+  const norm = (v) => String(v || '').trim().toLowerCase();
+  const opIdx = arr.findIndex((v) => norm(v) === 'operator' || norm(v) === 'op');
+  const nonOpIdx = arr.findIndex((v) => ['non-operator', 'nonoperator', 'non operator', 'non-op'].includes(norm(v)));
+  if (opIdx === -1 && nonOpIdx === -1) return dash;
+  const remap = new Map();
+  const newArr = [];
+  newArr[0] = opIdx !== -1 ? arr[opIdx] : 'Operator';
+  newArr[1] = nonOpIdx !== -1 ? arr[nonOpIdx] : 'Non-Operator';
+  if (opIdx !== -1) remap.set(opIdx, 0);
+  if (nonOpIdx !== -1) remap.set(nonOpIdx, 1);
+  let nextFree = 2;
+  arr.forEach((v, i) => {
+    if (i === opIdx || i === nonOpIdx) return;
+    remap.set(i, nextFree); newArr[nextFree] = v; nextFree++;
+  });
+  if (!arr.some((v, i) => remap.get(i) !== i)) return dash;
+  const usage = dash.usage.map((row) => {
+    const v = row[USAGE_COL.OP_STATUS];
+    if (v === undefined || v === null || !remap.has(v)) return row;
+    const next = row.slice();
+    next[USAGE_COL.OP_STATUS] = remap.get(v);
+    return next;
+  });
+  return { ...dash, dicts: { ...dash.dicts, operatorStatuses: newArr }, usage };
+}
+
+/** Applies every load-time data repair. Call whenever a dataset enters app
+ * state from anywhere other than a fresh import: initial load from
+ * localStorage, and backup restore. (Import itself keeps indices canonical
+ * going in via `upsertOpStatus`, but this is the single source of truth.) */
+export function repairDash(dash) {
+  return repairOperatorStatusIndices(repairMojibakeInDicts(dash));
 }
 
 function upsertInto(map, arr, value) {
@@ -49,6 +133,23 @@ function upsertInto(map, arr, value) {
   const idx = arr.length;
   arr.push(value);
   map.set(value, idx);
+  return idx;
+}
+
+/** Operator/Non-Operator must always resolve to stable semantic indices
+ * (0=Operator, 1=Non-Operator) regardless of which string the import
+ * encounters first or its exact casing/spelling — dozens of call sites
+ * compare against 0/1 directly. */
+function upsertOpStatus(dicts, opStatusMap, rawValue) {
+  if (!opStatusMap.has('operator')) { dicts.operatorStatuses[0] = 'Operator'; opStatusMap.set('operator', 0); }
+  if (!opStatusMap.has('non-operator')) { dicts.operatorStatuses[1] = 'Non-Operator'; opStatusMap.set('non-operator', 1); }
+  const norm = String(rawValue || '').trim().toLowerCase();
+  if (norm === 'operator' || norm === 'op') return 0;
+  if (norm === 'non-operator' || norm === 'nonoperator' || norm === 'non operator' || norm === 'non-op') return 1;
+  if (opStatusMap.has(norm)) return opStatusMap.get(norm);
+  const idx = dicts.operatorStatuses.length;
+  dicts.operatorStatuses.push(String(rawValue || '').trim() || ('#' + idx));
+  opStatusMap.set(norm, idx);
   return idx;
 }
 
@@ -71,8 +172,9 @@ function cloneDicts(dicts) {
 const FR_MONTHS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];
 
 /** Merge a "Usage LLM" export into `dash`. Returns { dash, usageAdded,
- * usageUpdated, newMonths }. One row per person per month is kept — a
- * re-imported month for the same person overwrites the earlier row. */
+ * usageUpdated, newMonths, log }. One row per person per month is kept — a
+ * re-imported month for the same person overwrites the earlier row. `log`
+ * captures counts/samples for the "Journal d'import" panel. */
 export async function importUsageFile(file, dash) {
   const rows = await readWorkbookRows(file, 'job_function');
   const headerRow = (rows[0] || []).map((h) => String(h || '').trim().toLowerCase());
@@ -88,6 +190,8 @@ export async function importUsageFile(file, dash) {
   if (col.email < 0) {
     throw new Error("Colonne 'email_address' introuvable dans le fichier Usage LLM.");
   }
+  const log = { fileName: file.name, rowsRead: Math.max(0, rows.length - 1), rowsRejected: 0, rejectSamples: [], missingCols: [], opStatusCounts: {} };
+  Object.entries(col).forEach(([k, v]) => { if (v < 0) log.missingCols.push(k); });
 
   const months = [...dash.months];
   const usage = [...dash.usage];
@@ -99,7 +203,7 @@ export async function importUsageFile(file, dash) {
   const segmentMap = new Map(dicts.segments.map((v, i) => [v, i]));
   const buMap = new Map(dicts.businessUnits.map((v, i) => [v, i]));
   const jobFunMap = new Map(dicts.jobFunctions.map((v, i) => [v, i]));
-  const opStatusMap = new Map(dicts.operatorStatuses.map((v, i) => [v, i]));
+  const opStatusMap = new Map(dicts.operatorStatuses.map((v, i) => [String(v || '').trim().toLowerCase(), i]));
   const jobFamilyMap = new Map(dicts.jobFamilies.map((v, i) => [v, i]));
   const jobFuncDescMap = new Map(dicts.jobFunctionDescriptions.map((v, i) => [v, i]));
   const jobDescMap = new Map(dicts.jobDescriptions.map((v, i) => [v, i]));
@@ -111,14 +215,26 @@ export async function importUsageFile(file, dash) {
   let usageAdded = 0, usageUpdated = 0;
   const newMonths = [];
 
-  rows.slice(1).forEach((r) => {
-    if (!r || !r[col.email]) return;
+  rows.slice(1).forEach((r, ri) => {
+    if (!r || col.email < 0 || !r[col.email]) {
+      log.rowsRejected++;
+      if (log.rejectSamples.length < 5) log.rejectSamples.push({ row: ri + 2, reason: 'email_address vide ou colonne absente' });
+      return;
+    }
     const email = String(r[col.email]).trim().toLowerCase();
-    if (!email) return;
+    if (!email) {
+      log.rowsRejected++;
+      if (log.rejectSamples.length < 5) log.rejectSamples.push({ row: ri + 2, reason: 'email_address vide' });
+      return;
+    }
     const emailIdx = upsertInto(emailMap, dicts.emails, email);
     const year = parseInt(r[col.year], 10);
     const monthNum = parseInt(r[col.month], 10);
-    if (!year || !monthNum) return;
+    if (!year || !monthNum) {
+      log.rowsRejected++;
+      if (log.rejectSamples.length < 5) log.rejectSamples.push({ row: ri + 2, reason: `year/month invalide (year="${r[col.year]}", month="${r[col.month]}")` });
+      return;
+    }
     const key = year + '-' + String(monthNum).padStart(2, '0');
     let monthIdx = monthKeyToIdx.get(key);
     if (monthIdx === undefined) {
@@ -133,7 +249,9 @@ export async function importUsageFile(file, dash) {
     const segmentIdx = upsertInto(segmentMap, dicts.segments, String(r[col.segment] || '').trim());
     const buIdx = upsertInto(buMap, dicts.businessUnits, String(r[col.bu] || '').trim());
     const jobFunIdx = upsertInto(jobFunMap, dicts.jobFunctions, String(r[col.jobFunction] || '').trim());
-    const opStatusIdx = upsertInto(opStatusMap, dicts.operatorStatuses, String(r[col.opStatus] || '').trim());
+    const opStatusIdx = upsertOpStatus(dicts, opStatusMap, r[col.opStatus]);
+    const opStatusLabel = dicts.operatorStatuses[opStatusIdx];
+    log.opStatusCounts[opStatusLabel] = (log.opStatusCounts[opStatusLabel] || 0) + 1;
     const jobFamilyIdx = upsertInto(jobFamilyMap, dicts.jobFamilies, cleanLabel(String(r[col.jobFamily] || '').trim()));
     const jobFuncDescIdx = upsertInto(jobFuncDescMap, dicts.jobFunctionDescriptions, cleanLabel(String(r[col.jobFuncDesc] || '').trim()));
     const jobDescIdx = upsertInto(jobDescMap, dicts.jobDescriptions, cleanLabel(String(r[col.jobDesc] || '').trim()));
@@ -171,11 +289,11 @@ export async function importUsageFile(file, dash) {
     }
   });
 
-  return { dash: { ...dash, months, usage, dicts }, usageAdded, usageUpdated, newMonths };
+  return { dash: { ...dash, months, usage, dicts }, usageAdded, usageUpdated, newMonths, log };
 }
 
 /** Replace the whole employee referential from an "Employees" export.
- * Returns { dash, employeesCount }. */
+ * Returns { dash, employeesCount, log }. */
 export async function importEmployeesFile(file, dash) {
   const rows = await readWorkbookRows(file, 'userid');
   const headerRow = (rows[0] || []).map((h) => String(h || '').trim().toUpperCase());
@@ -187,11 +305,13 @@ export async function importEmployeesFile(file, dash) {
   if (col.userId < 0) {
     throw new Error("Colonne 'USERID' introuvable dans le fichier Employés.");
   }
+  const log = { fileName: file.name, rowsRead: Math.max(0, rows.length - 1), rowsRejected: 0, missingCols: [] };
+  Object.entries(col).forEach(([k, v]) => { if (v < 0) log.missingCols.push(k); });
   const dicts = cloneDicts(dash.dicts);
   const emailMap = new Map(dicts.emails.map((v, i) => [v, i]));
   const employees = [];
   rows.slice(1).forEach((r) => {
-    if (!r || !r[col.userId]) return;
+    if (!r || !r[col.userId]) { log.rowsRejected++; return; }
     const email = col.email >= 0 ? String(r[col.email] || '').trim().toLowerCase() : '';
     const emailIdx = email ? upsertInto(emailMap, dicts.emails, email) : -1;
     const row = [];
@@ -202,7 +322,7 @@ export async function importEmployeesFile(file, dash) {
     row[EMP_COL.SUPERVISOR] = r[col.sup] ? String(r[col.sup]).trim() : null;
     employees.push(row);
   });
-  return { dash: { ...dash, dicts, employees }, employeesCount: employees.length };
+  return { dash: { ...dash, dicts, employees }, employeesCount: employees.length, log };
 }
 
 export function datasetSummary(dash) {

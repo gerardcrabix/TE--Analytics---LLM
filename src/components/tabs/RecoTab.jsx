@@ -3,23 +3,31 @@ import { useDashboard } from '../../state/DashboardContext';
 import { useGeoOptions } from '../../hooks/useGeoOptions';
 import { GeoFilterFields } from '../shared/GeoFilterFields';
 import { KpiTile } from '../shared/OpPill';
+import { Select } from '../shared/Field';
+import { monthOptionsFor } from '../../lib/dashboardIndex';
 import { computeRecoSnapshot, generateRecommendationText } from '../../lib/recommend';
 
 function recoFilterKey(f) {
-  return `bu:${f.bu}|region:${f.region}|country:${f.country}|jobFunction:${f.jobFunction}|opStatus:${f.opStatus}`;
+  return `bu:${f.bu}|region:${f.region}|country:${f.country}|jobFunction:${f.jobFunction}|opStatus:${f.opStatus}|year:${f.year}|month:${f.month}`;
 }
 
 export function RecoTab() {
-  const { idx, geo, updateGeo, kol, recoHistory, pushRecoEntry } = useDashboard();
+  const { idx, geo, updateGeo, kol, recoMY, updateRecoMY, reclass, saveReclass, recoHistory, pushRecoEntry } = useDashboard();
   const opts = useGeoOptions(idx, geo, updateGeo);
   const dash = idx.dash;
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
 
-  const filters = useMemo(() => ({ bu: geo.bu, region: geo.region, country: geo.country, jobFunction: geo.jobFunction, opStatus: geo.opStatus }),
-    [geo.bu, geo.region, geo.country, geo.jobFunction, geo.opStatus]);
+  const recoMonthOptions = useMemo(() => monthOptionsFor(idx.dash, recoMY.year), [idx.dash, recoMY.year]);
+  const recoYearValue = recoMY.year === 'all' ? 'all' : String(recoMY.year);
+  const recoMonthValue = recoMY.month === 'all' ? 'all' : String(recoMY.month);
+  const onRecoYearChange = (e) => updateRecoMY({ year: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+  const onRecoMonthChange = (e) => updateRecoMY({ month: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+
+  const filters = useMemo(() => ({ bu: geo.bu, region: geo.region, country: geo.country, jobFunction: geo.jobFunction, opStatus: geo.opStatus, year: recoMY.year, month: recoMY.month }),
+    [geo.bu, geo.region, geo.country, geo.jobFunction, geo.opStatus, recoMY.year, recoMY.month]);
   const filterKey = recoFilterKey(filters);
-  const snapshot = useMemo(() => computeRecoSnapshot(idx, filters, kol), [idx, filters, kol]);
+  const snapshot = useMemo(() => computeRecoSnapshot(idx, filters, kol, reclass.includeContractors), [idx, filters, kol, reclass.includeContractors]);
 
   const historyForFilter = useMemo(() => recoHistory
     .filter((e) => e.filterKey === filterKey)
@@ -58,7 +66,25 @@ export function RecoTab() {
       <p className="h1-sub">Générez des recommandations ciblées pour un périmètre BU / géo / équipe. Chaque génération est datée et conservée : au fil des mises à jour du fichier, comparez la situation à date avec ce qui avait été identifié.</p>
 
       <div className="filter-bar">
+        <div>
+          <label className="field-label">Année</label>
+          <Select value={recoYearValue} onChange={onRecoYearChange} style={{ minWidth: 100 }}>
+            <option value="all">Toutes années</option>
+            {opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
+        </div>
+        <div>
+          <label className="field-label">Mois</label>
+          <Select value={recoMonthValue} onChange={onRecoMonthChange} style={{ minWidth: 140 }}>
+            <option value="all">Tous les mois (cumul)</option>
+            {recoMonthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
+        </div>
         <GeoFilterFields opts={opts} fields={['bu', 'region', 'country', 'jobFunction', 'opStatus']} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, alignSelf: 'flex-end', paddingBottom: 8 }}>
+          <input type="checkbox" checked={reclass.includeContractors} onChange={(e) => saveReclass({ includeContractors: e.target.checked })} />
+          Inclure les Contractors
+        </label>
         <div style={{ alignSelf: 'flex-end' }}>
           <button className="btn btn-primary" disabled={generating} onClick={onGenerate}>{generating ? 'Génération…' : 'Générer une recommandation'}</button>
         </div>

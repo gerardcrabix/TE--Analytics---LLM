@@ -31,6 +31,18 @@ export function buildIndex(dash) {
   }
   for (const [emailIdx, rec] of byEmail) rec.emp = empByEmailIdx.get(emailIdx) || null;
 
+  // First-seen domain/sub-domain a given job family/job description was
+  // observed under — powers the domain search autocomplete's "jump to" links.
+  const familyToFunc = new Map(), descToFunc = new Map(), descToFamily = new Map();
+  for (const row of dash.usage) {
+    const famIdx = row[U.JOB_FAMILY], funIdx = row[U.JOB_FUNCTION], descIdx = row[U.JOB_DESC];
+    if (famIdx !== null && famIdx !== undefined && !familyToFunc.has(famIdx)) familyToFunc.set(famIdx, funIdx);
+    if (descIdx !== null && descIdx !== undefined) {
+      if (!descToFunc.has(descIdx)) descToFunc.set(descIdx, funIdx);
+      if (!descToFamily.has(descIdx)) descToFamily.set(descIdx, famIdx);
+    }
+  }
+
   const pairCounts = new Map(), buTotals = new Map(), segTotals = new Map();
   for (const row of dash.usage) {
     const segIdx = row[U.SEGMENT], buIdx = row[U.BU];
@@ -54,6 +66,7 @@ export function buildIndex(dash) {
     dash,
     byEmail, empByUserId, empByEmailIdx, childrenByUserId,
     buToSegments, segmentToBus,
+    familyToFunc, descToFunc, descToFamily,
     hasJobHierarchy: (dash.dicts.jobDescriptions || []).length > 0,
     numMonths: dash.months.length,
   };
@@ -84,6 +97,14 @@ export function opStatusPillStyle(idx, size) {
 export function isContractor(idx, rec) {
   if (!rec || !rec.latest) return false;
   const userTypeIdx = rec.latest[U.USER_TYPE];
+  if (userTypeIdx === undefined || userTypeIdx === null) return false;
+  return idx.dash.dicts.userTypes[userTypeIdx] === 'CONTRACTOR';
+}
+
+/** Row-level contractor check (vs. `isContractor`'s person/latest-row check)
+ * — used wherever an aggregation walks raw usage rows directly. */
+export function isContractorRow(idx, row) {
+  const userTypeIdx = row[U.USER_TYPE];
   if (userTypeIdx === undefined || userTypeIdx === null) return false;
   return idx.dash.dicts.userTypes[userTypeIdx] === 'CONTRACTOR';
 }
@@ -144,11 +165,12 @@ export function sizeMetricValue(c, key) {
 
 /** Aggregate usage rows into per-country totals, honoring every geo/operator/
  * population filter used across the app. */
-export function computeGeoAgg(idx, f) {
+export function computeGeoAgg(idx, f, includeContractors = true) {
   const byCountry = new Map();
   const totalHead = new Set(), totalActive = new Set();
   let totalPrompts = 0;
   for (const row of idx.dash.usage) {
+    if (!includeContractors && isContractorRow(idx, row)) continue;
     const monthIdx = row[U.MONTH], countryIdx = row[U.COUNTRY], regionIdx = row[U.REGION], segmentIdx = row[U.SEGMENT];
     const jobFunIdx = row[U.JOB_FUNCTION], buIdx = row[U.BU], opStatusIdx = row[U.OP_STATUS];
     if (f.year && f.year !== 'all' && idx.dash.months[monthIdx].year !== f.year) continue;
@@ -176,11 +198,12 @@ export function computeGeoAgg(idx, f) {
   return { byCountry, totals: { headcount: totalHead.size, active: totalActive.size, prompts: totalPrompts } };
 }
 
-export function computeKolCandidates(idx, f) {
+export function computeKolCandidates(idx, f, includeContractors = true) {
   const list = [];
   for (const [emailIdx, rec] of idx.byEmail) {
     const latest = rec.latest;
     if (!latest) continue;
+    if (!includeContractors && isContractor(idx, rec)) continue;
     const countryIdx = latest[U.COUNTRY], regionIdx = latest[U.REGION], segmentIdx = latest[U.SEGMENT];
     const jobFunIdx = latest[U.JOB_FUNCTION], buIdx = latest[U.BU], opStatusIdx = latest[U.OP_STATUS];
     if (f.region !== 'all' && regionIdx !== f.region) continue;
@@ -209,9 +232,10 @@ export function computeInfluence(idx, kol, f) {
     if (emailIdx === kol.emailIdx) continue;
     const latest = rec.latest;
     if (!latest) continue;
-    const countryIdx = latest[U.COUNTRY], jobFunIdx = latest[U.JOB_FUNCTION], opStatusIdx = latest[U.OP_STATUS];
+    const countryIdx = latest[U.COUNTRY], jobFunIdx = latest[U.JOB_FUNCTION], jobDescIdx = latest[U.JOB_DESC], opStatusIdx = latest[U.OP_STATUS];
     if (f.requireSameTeam && jobFunIdx !== kol.jobFunIdx) continue;
     if (f.requireSameGeo && countryIdx !== kol.countryIdx) continue;
+    if (f.requireSameJob && jobDescIdx !== kol.jobDescIdx) continue;
     const sum = personSumInWindow(idx, rec, f.months);
     if (sum >= f.lowThreshold) continue;
     const sameSup = !!(rec.emp && kolSupUserId && rec.emp[E.SUPERVISOR] === kolSupUserId);
@@ -261,7 +285,9 @@ export function buildTree(idx, rootUserId, geo, kolMonths, minPrompts, reclass) 
     const emp = idx.empByUserId.get(userId);
     if (!emp) return null;
     const rec = emp[E.EMAIL] >= 0 ? idx.byEmail.get(emp[E.EMAIL]) : null;
-    const sum = rec ? personSumFiltered(idx, rec, geo, kolMonths) : null;
+    // Engagement dots reflect "ever active in the recent window", independent of
+    // any month/year scoping — the stats cards below the tree are what respect it.
+    const sum = rec ? personSumInWindow(idx, rec, kolMonths) : null;
     let status = 'unknown';
     if (rec) status = sum >= minPrompts ? 'engaged' : sum > 0 ? 'low' : 'none';
     const childIds = idx.childrenByUserId.get(userId) || [];
@@ -329,24 +355,25 @@ export function computeLeafCounts(node, includeContractors) {
  * - `overridesMap` lets a scenario's own descOverrides be used instead of
  *   the live `reclass.descOverrides` — used by the scenario plan/compare
  *   tools to evaluate a scenario without touching current state. */
-export function computeReclassInfo(idx, scopeFilter, geo, kolMonths, reclass, ignoreOverrides, overridesMap) {
+export function computeReclassInfo(idx, scopeFilter, geo, kolMonths, reclass, ignoreOverrides, overridesMap, monthYear) {
+  const effGeo = monthYear ? { ...geo, month: monthYear.month, year: monthYear.year } : geo;
   let total = 0, active = 0, nonOpTotal = 0, nonOpActive = 0, opTotal = 0, opActive = 0;
   const byDesc = new Map();
   const descOverrides = overridesMap || reclass.descOverrides;
   for (const [emailIdx, rec] of idx.byEmail) {
-    const latest = rowForGeo(idx, rec, geo);
+    const latest = rowForGeo(idx, rec, effGeo);
     if (!latest) continue;
     if (!reclass.includeContractors && isContractor(idx, rec)) continue;
     if (scopeFilter && !scopeFilter(latest, emailIdx, rec)) continue;
     const jobDescIdx = idx.hasJobHierarchy ? latest[U.JOB_DESC] : null;
-    const jobFunIdx = latest[U.JOB_FUNCTION];
+    const jobFunIdx = latest[U.JOB_FUNCTION], jobFamilyIdx = latest[U.JOB_FAMILY];
     const effOpIdx = ignoreOverrides ? latest[U.OP_STATUS] : effectiveOpStatusIdx(descOverrides, jobDescIdx, latest[U.OP_STATUS]);
-    const sum = personSumFiltered(idx, rec, geo, kolMonths);
+    const sum = personSumFiltered(idx, rec, effGeo, kolMonths);
     const act = sum > 0 ? 1 : 0;
     total++; active += act;
     if (effOpIdx !== 0) { nonOpTotal++; nonOpActive += act; } else { opTotal++; opActive += act; }
     if (jobDescIdx !== null && jobDescIdx !== undefined && jobDescIdx >= 0) {
-      if (!byDesc.has(jobDescIdx)) byDesc.set(jobDescIdx, { jobDescIdx, jobFunIdx, total: 0, active: 0, nonOpTotal: 0, nonOpActive: 0, opTotal: 0, opActive: 0 });
+      if (!byDesc.has(jobDescIdx)) byDesc.set(jobDescIdx, { jobDescIdx, jobFunIdx, jobFamilyIdx, total: 0, active: 0, nonOpTotal: 0, nonOpActive: 0, opTotal: 0, opActive: 0 });
       const d = byDesc.get(jobDescIdx);
       d.total++; d.active += act;
       if (effOpIdx !== 0) { d.nonOpTotal++; d.nonOpActive += act; } else { d.opTotal++; d.opActive += act; }
@@ -355,14 +382,101 @@ export function computeReclassInfo(idx, scopeFilter, geo, kolMonths, reclass, ig
   return { total, active, nonOpTotal, nonOpActive, opTotal, opActive, byDesc };
 }
 
+/** Per-month stats for a fixed geo/BU/domain filter, ignoring the shared
+ * `geo.month`/`geo.year` scope — powers the timeline/report month-by-month
+ * series. */
+export function computeMonthStats(idx, monthIdx, f, overridesMap, ignoreOverrides, reclass) {
+  let total = 0, active = 0, opTotal = 0, opActive = 0, nonOpTotal = 0, nonOpActive = 0;
+  for (const row of idx.dash.usage) {
+    if (row[U.MONTH] !== monthIdx) continue;
+    if (!reclass.includeContractors && isContractorRow(idx, row)) continue;
+    const countryIdx = row[U.COUNTRY], regionIdx = row[U.REGION], segmentIdx = row[U.SEGMENT];
+    const jobFunIdx = row[U.JOB_FUNCTION], totalPrompts = row[U.TOTAL], jobDescIdx = row[U.JOB_DESC], buIdx = row[U.BU], opStatusIdx = row[U.OP_STATUS];
+    if (f.region !== 'all' && regionIdx !== f.region) continue;
+    if (f.country && f.country !== 'all' && countryIdx !== f.country) continue;
+    if (f.segment !== 'all' && segmentIdx !== f.segment) continue;
+    if (f.jobFunction !== 'all' && jobFunIdx !== f.jobFunction) continue;
+    if (f.bu !== 'all' && buIdx !== f.bu) continue;
+    const effOp = ignoreOverrides ? opStatusIdx : effectiveOpStatusIdx(overridesMap, idx.hasJobHierarchy ? jobDescIdx : null, opStatusIdx);
+    const act = totalPrompts > 0 ? 1 : 0;
+    total++; active += act;
+    if (effOp !== 0) { nonOpTotal++; nonOpActive += act; } else { opTotal++; opActive += act; }
+  }
+  return {
+    total, active, opTotal, opActive, nonOpTotal, nonOpActive,
+    pctAll: total ? Math.round((active / total) * 100) : null,
+    pctOp: opTotal ? Math.round((opActive / opTotal) * 100) : null,
+    pctNonOp: nonOpTotal ? Math.round((nonOpActive / nonOpTotal) * 100) : null,
+  };
+}
+
+/** Turns a series of {label, [curKey], [scKey]} points into SVG polyline
+ * coordinates + grid lines + per-dot label placements, shared by every
+ * Timeline-tab chart. */
+export function buildLineChart(points, curKey, scKey, opts) {
+  opts = opts || {};
+  const n = points.length;
+  const curVals = points.map((p) => p[curKey]).filter((v) => v !== null && v !== undefined);
+  const scVals = scKey ? points.map((p) => p[scKey]).filter((v) => v !== null && v !== undefined) : [];
+  const allVals = curVals.concat(scVals);
+  const rawMin = allVals.length ? Math.min(...allVals) : 0;
+  const rawMax = allVals.length ? Math.max(...allVals) : (opts.isPercent ? 100 : 10);
+  let min, max;
+  if (opts.isPercent) {
+    min = Math.max(0, Math.floor(rawMin) - 5);
+    max = Math.min(100, Math.ceil(rawMax) + 5);
+    if (max <= min) max = min + 10;
+  } else {
+    const span = Math.max(1, rawMax - rawMin);
+    let niceStep = Math.pow(10, Math.floor(Math.log10(span / 4 || 1)));
+    if (span / niceStep > 8) niceStep *= 2;
+    if (!niceStep || !isFinite(niceStep)) niceStep = 1;
+    min = Math.floor(rawMin / niceStep) * niceStep;
+    max = Math.ceil(rawMax / niceStep) * niceStep + niceStep;
+    if (opts.forceMinZero) min = Math.min(0, min);
+    if (max <= min) max = min + 1;
+  }
+  const chartW = 860, chartH = 220;
+  const xFor = (i) => (n <= 1 ? 0 : (chartW * i) / (n - 1));
+  const yFor = (v) => chartH - ((Math.max(min, Math.min(max, v === null || v === undefined ? min : v)) - min) / (max - min)) * chartH;
+  const fmtVal = (v) => (opts.isPercent ? Math.round(v) + '%' : Math.round(v) + (opts.unit || ''));
+  const curLine = points.map((p, i) => xFor(i) + ',' + Math.round(yFor(p[curKey]) * 10) / 10).join(' ');
+  const scLine = scKey ? points.map((p, i) => xFor(i) + ',' + Math.round(yFor(p[scKey]) * 10) / 10).join(' ') : '';
+  const tickCount = 5;
+  const gridLines = Array.from({ length: tickCount }, (_, k) => {
+    const v = min + ((max - min) * k) / (tickCount - 1);
+    return { topPx: Math.round(yFor(v)), label: opts.isPercent ? Math.round(v) + '%' : String(Math.round(v)) };
+  });
+  const dots = points.map((p, i) => {
+    const cv = p[curKey], sv = scKey ? p[scKey] : null;
+    const dir = (scKey && sv !== null && sv !== undefined && cv !== null && cv !== undefined && cv < sv) ? 14 : -16;
+    return {
+      leftPct: Math.round((xFor(i) / chartW) * 1000) / 10, topPx: Math.round(yFor(cv)), labelOffset: dir,
+      tickLabel: (n > 14 && i % 2 !== 0) ? '' : p.label,
+      valueLabel: cv === null || cv === undefined ? '' : fmtVal(cv),
+      hoverTitle: p.label + ' — ' + (opts.curName || 'Actuel') + ' : ' + (cv === null || cv === undefined ? '—' : fmtVal(cv)),
+    };
+  });
+  const scDots = scKey ? points.map((p, i) => {
+    const cv = p[curKey], sv = p[scKey];
+    const dir = (sv !== null && sv !== undefined && cv !== null && cv !== undefined && sv <= cv) ? 14 : -16;
+    return {
+      leftPct: Math.round((xFor(i) / chartW) * 1000) / 10, topPx: Math.round(yFor(sv)), labelOffset: dir,
+      valueLabel: sv === null || sv === undefined ? '' : fmtVal(sv),
+      hoverTitle: p.label + ' — ' + (opts.scName || 'Scénario') + ' : ' + (sv === null || sv === undefined ? '—' : fmtVal(sv)),
+    };
+  }) : [];
+  return { curLine, scLine, gridLines, dots, scDots, chartW, chartH, empty: n === 0 };
+}
+
 /** Groups every job description with inactive Non-Operators (under the given
  * `descOverrides`) into an "activable" action plan: mobilize existing KOLs
  * where one is already identified, plan formal training where none is, and
  * flag branches that look misclassified (already mostly active). Powers the
  * "Plan d'action pour un scénario" card in Comparer scénarios. */
-export function computeScenarioPlan(idx, descOverrides, includeContractors, geo, kolMonths, kolMinPrompts) {
+export function computeScenarioPlan(idx, descOverrides, includeContractors, geo, kolMonths, kolMinPrompts, monthYear) {
   const reclass = { includeContractors, descOverrides };
-  const info = computeReclassInfo(idx, null, geo, kolMonths, reclass, false, descOverrides);
+  const info = computeReclassInfo(idx, null, geo, kolMonths, reclass, false, descOverrides, monthYear);
   const branches = [];
   for (const [jobDescIdx, d] of info.byDesc) {
     const inactive = d.nonOpTotal - d.nonOpActive;
@@ -438,8 +552,9 @@ export function computeReclassAdvice(idx, byDesc, kolMinPrompts, kolMonths) {
 /** Domaine (job function) → job family → job description tree, used by the
  * "Domaine" mode of the Managérial/Domaine tab. `domainJobFunIdx === 'all'`
  * aggregates every domain together. */
-export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass) {
+export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass, monthYear) {
   const isAll = domainJobFunIdx === 'all';
+  geo = monthYear ? { ...geo, month: monthYear.month, year: monthYear.year } : geo;
   const passGeo = (latest) => {
     if (geo.region !== 'all' && latest[U.REGION] !== geo.region) return false;
     if (geo.country !== 'all' && latest[U.COUNTRY] !== geo.country) return false;
@@ -514,6 +629,115 @@ export function computeDomainTree(idx, domainJobFunIdx, geo, kolMonths, reclass)
   };
 }
 
+/** Per-domain (job function) synthesis — headcount, Operator/Non-Operator
+ * share of the total population, and each population's own active rate —
+ * shown as the "Synthèse par domaine (avant transfert)" table in domain
+ * mode, before any forçage is applied. */
+export function computeDomainSynthesis(idx, geo, kolMonths, reclass, monthYear) {
+  const effGeo = monthYear ? { ...geo, month: monthYear.month, year: monthYear.year } : geo;
+  const byFun = new Map();
+  for (const [, rec] of idx.byEmail) {
+    const latest = rowForGeo(idx, rec, effGeo);
+    if (!latest) continue;
+    if (!reclass.includeContractors && isContractor(idx, rec)) continue;
+    const jobFunIdx = latest[U.JOB_FUNCTION];
+    if (jobFunIdx === undefined || jobFunIdx === null || jobFunIdx < 0 || !idx.dash.dicts.jobFunctions[jobFunIdx]) continue;
+    if (!byFun.has(jobFunIdx)) byFun.set(jobFunIdx, { jobFunIdx, label: idx.dash.dicts.jobFunctions[jobFunIdx], total: 0, opTotal: 0, opActive: 0, nonOpTotal: 0, nonOpActive: 0 });
+    const d = byFun.get(jobFunIdx);
+    const sum = personSumFiltered(idx, rec, effGeo, kolMonths);
+    const act = sum > 0 ? 1 : 0;
+    d.total++;
+    if (latest[U.OP_STATUS] === 0) { d.opTotal++; d.opActive += act; } else { d.nonOpTotal++; d.nonOpActive += act; }
+  }
+  return Array.from(byFun.values())
+    .map((d) => ({
+      ...d, active: d.opActive + d.nonOpActive,
+      opShareOfTotal: d.total ? Math.round((d.opTotal / d.total) * 100) : 0,
+      nonOpShareOfTotal: d.total ? Math.round((d.nonOpTotal / d.total) * 100) : 0,
+      opActivePct: d.opTotal ? Math.round((d.opActive / d.opTotal) * 100) : null,
+      nonOpPct: d.nonOpTotal ? Math.round((d.nonOpActive / d.nonOpTotal) * 100) : null,
+    }))
+    .map((d) => ({ ...d, opActivePctLabel: d.opActivePct === null ? '—' : d.opActivePct + '%', nonOpPctLabel: d.nonOpPct === null ? '—' : d.nonOpPct + '%' }))
+    .sort((a, b) => b.total - a.total);
+}
+
+/** Fuzzy search across domains / sub-domains (job families) / job
+ * descriptions for the Tree tab's domain autocomplete. Each result carries
+ * enough to jump straight to it (`funIdx`/`famIdx`/`descIdx`). */
+export function buildDomainSearchResults(idx, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (q.length < 2) return [];
+  const dicts = idx.dash.dicts;
+  const results = [];
+  dicts.jobFunctions.forEach((name, i) => {
+    if (name && name.toLowerCase().includes(q)) results.push({ key: 'r-fun-' + i, typeLabel: 'Domaine', name, funIdx: i, famIdx: null, descIdx: null });
+  });
+  (dicts.jobFamilies || []).forEach((name, i) => {
+    if (!name || !name.toLowerCase().includes(q)) return;
+    const funIdx = idx.familyToFunc.get(i);
+    if (funIdx !== undefined) results.push({ key: 'r-fam-' + i, typeLabel: 'Sous-domaine · ' + (dicts.jobFunctions[funIdx] || '—'), name, funIdx, famIdx: i, descIdx: null });
+  });
+  (dicts.jobDescriptions || []).forEach((name, i) => {
+    if (!name || !name.toLowerCase().includes(q)) return;
+    const funIdx = idx.descToFunc.get(i), famIdx = idx.descToFamily.get(i);
+    if (funIdx !== undefined) results.push({ key: 'r-desc-' + i, typeLabel: 'Job description · ' + (dicts.jobFunctions[funIdx] || '—'), name, funIdx, famIdx: famIdx === undefined ? null : famIdx, descIdx: i });
+  });
+  return results.slice(0, 25);
+}
+
+/** Region / country / function breakdown of before-vs-after reclassification,
+ * used by the Rapport tab's priority tables. */
+export function computeReportBreakdown(idx, geo, kolMonths, reclass, overridesMap, monthYear) {
+  const effGeo = monthYear ? { ...geo, month: monthYear.month, year: monthYear.year } : geo;
+  const byRegion = new Map(), byCountry = new Map(), byFunction = new Map();
+  const bump = (map, key, label) => {
+    if (key === undefined || key === null || key < 0) return null;
+    if (!map.has(key)) map.set(key, { label, beforeOpTotal: 0, beforeNonOpTotal: 0, beforeNonOpActive: 0, afterOpTotal: 0, afterNonOpTotal: 0, afterNonOpActive: 0, reclassToOp: 0, reclassToNonOp: 0 });
+    return map.get(key);
+  };
+  for (const [, rec] of idx.byEmail) {
+    const latest = rowForGeo(idx, rec, effGeo);
+    if (!latest) continue;
+    if (!reclass.includeContractors && isContractor(idx, rec)) continue;
+    const jobDescIdx = idx.hasJobHierarchy ? latest[U.JOB_DESC] : null, jobFunIdx = latest[U.JOB_FUNCTION];
+    const regionIdx = latest[U.REGION], countryIdx = latest[U.COUNTRY];
+    const rawOp = latest[U.OP_STATUS];
+    const beforeIsNonOp = rawOp !== 0;
+    const afterIsNonOp = effectiveOpStatusIdx(overridesMap, jobDescIdx, rawOp) !== 0;
+    const sum = personSumFiltered(idx, rec, effGeo, kolMonths);
+    const act = sum > 0 ? 1 : 0;
+    [[byRegion, regionIdx, idx.dash.dicts.regions[regionIdx]], [byCountry, countryIdx, countryLabel(countryIdx, idx.dash)], [byFunction, jobFunIdx, idx.dash.dicts.jobFunctions[jobFunIdx] || '—']].forEach(([map, key, label]) => {
+      const d = bump(map, key, label);
+      if (!d) return;
+      if (beforeIsNonOp) { d.beforeNonOpTotal++; d.beforeNonOpActive += act; } else { d.beforeOpTotal++; }
+      if (afterIsNonOp) { d.afterNonOpTotal++; d.afterNonOpActive += act; } else { d.afterOpTotal++; }
+      if (beforeIsNonOp && !afterIsNonOp) d.reclassToOp++;
+      if (!beforeIsNonOp && afterIsNonOp) d.reclassToNonOp++;
+    });
+  }
+  const toRows = (map) => Array.from(map.values()).map((d) => {
+    const beforeTotal = d.beforeOpTotal + d.beforeNonOpTotal, afterTotal = d.afterOpTotal + d.afterNonOpTotal;
+    const inactive = d.beforeNonOpTotal - d.beforeNonOpActive;
+    return {
+      ...d, beforeTotal, afterTotal, inactive, netMovement: d.reclassToOp - d.reclassToNonOp,
+      beforePct: d.beforeNonOpTotal ? Math.round((d.beforeNonOpActive / d.beforeNonOpTotal) * 100) : null,
+      afterPct: d.afterNonOpTotal ? Math.round((d.afterNonOpActive / d.afterNonOpTotal) * 100) : null,
+      priority: inactive,
+    };
+  }).sort((a, b) => b.priority - a.priority).map((r, i) => ({ ...r, rank: i + 1, isTop: i === 0 }));
+  return { byRegion: toRows(byRegion), byCountry: toRows(byCountry), byFunction: toRows(byFunction) };
+}
+
+/** Month `<option>` list restricted to a given year (or all months when
+ * `year === 'all'`) — used by every tab with its own decoupled year/month
+ * filter (Tree, Reco, Pivot, Comparer scénarios, Évolution temporelle,
+ * Rapport), each scoped independently from the shared `geo.year`/`geo.month`. */
+export function monthOptionsFor(dash, year) {
+  return dash.months
+    .map((m, i) => ({ value: String(i), label: m.label, year: m.year }))
+    .filter((o) => year === 'all' || o.year === year);
+}
+
 export const DIM_LABELS = {
   year: 'Année', month: 'Mois', region: 'Région', country: 'Pays', segment: 'Segment',
   bu: 'Business Unit', jobFunction: 'Équipe/Fonction', opStatus: 'Operator/Non-Operator',
@@ -534,8 +758,9 @@ export function pivotDimDef(idx, key) {
   return defs[key];
 }
 
-export function filterUsageRows(idx, f) {
+export function filterUsageRows(idx, f, includeContractors = true) {
   return idx.dash.usage.filter((row) => {
+    if (!includeContractors && isContractorRow(idx, row)) return false;
     const monthIdx = row[U.MONTH], countryIdx = row[U.COUNTRY], regionIdx = row[U.REGION], segmentIdx = row[U.SEGMENT];
     const jobFunIdx = row[U.JOB_FUNCTION], buIdx = row[U.BU], opStatusIdx = row[U.OP_STATUS];
     if (f.year && f.year !== 'all' && idx.dash.months[monthIdx].year !== f.year) return false;

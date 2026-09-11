@@ -6,8 +6,10 @@ const TABS = [
   { key: 'tree', label: 'Managérial / Domaine', dot: 'var(--gray-dot)' },
   { key: 'scenarioCompare', label: 'Comparer scénarios', dot: 'var(--purple)' },
   { key: 'reco', label: 'Recommandations', dot: 'var(--purple)' },
+  { key: 'timeline', label: 'Évolution temporelle', dot: 'oklch(55% 0.14 30)' },
   { key: 'pivot', label: 'Analyse dynamique', dot: 'var(--green)' },
   { key: 'data', label: 'Données', dot: 'oklch(55% 0.01 60)' },
+  { key: 'report', label: 'Rapport', dot: 'oklch(50% 0.15 300)' },
 ];
 
 export function Sidebar() {

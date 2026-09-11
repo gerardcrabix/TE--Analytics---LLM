@@ -5,8 +5,10 @@ import { KolTab } from './components/tabs/KolTab';
 import { TreeTab } from './components/tabs/TreeTab';
 import { ScenarioCompareTab } from './components/tabs/ScenarioCompareTab';
 import { RecoTab } from './components/tabs/RecoTab';
+import { TimelineTab } from './components/tabs/TimelineTab';
 import { PivotTab } from './components/tabs/PivotTab';
 import { DataTab } from './components/tabs/DataTab';
+import { ReportTab } from './components/tabs/ReportTab';
 
 function Shell() {
   const { tab, hasData } = useDashboard();
@@ -23,8 +25,10 @@ function Shell() {
             {tab === 'tree' && <TreeTab />}
             {tab === 'scenarioCompare' && <ScenarioCompareTab />}
             {tab === 'reco' && <RecoTab />}
+            {tab === 'timeline' && <TimelineTab />}
             {tab === 'pivot' && <PivotTab />}
             {tab === 'data' && <DataTab />}
+            {tab === 'report' && <ReportTab />}
           </>
         )}
       </div>

@@ -9,11 +9,11 @@ import { computeGeoAgg, countryLabel, fmt, pct } from '../../lib/dashboardIndex'
 import { COUNTRY_CENTROIDS } from '../../lib/geoRef';
 
 export function GeoTab() {
-  const { idx, geo, updateGeo, hoverCountryIdx, setHoverCountryIdx, pinnedCountryIdx, setPinnedCountryIdx } = useDashboard();
+  const { idx, geo, updateGeo, reclass, saveReclass, hoverCountryIdx, setHoverCountryIdx, pinnedCountryIdx, setPinnedCountryIdx } = useDashboard();
   const opts = useGeoOptions(idx, geo, updateGeo);
   const mapRef = useRef(null);
 
-  const agg = useMemo(() => computeGeoAgg(idx, geo), [idx, geo]);
+  const agg = useMemo(() => computeGeoAgg(idx, geo, reclass.includeContractors), [idx, geo, reclass.includeContractors]);
   const isNoUsageMetric = geo.metric === 'noUsageShare';
   const sortBy = geo.sortBy || 'share', sortDir = geo.sortDir || 'desc';
 
@@ -94,6 +94,12 @@ export function GeoTab() {
             <option value="active">Nb actifs</option>
           </Select>
         </Field>
+        <Field label="">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={reclass.includeContractors} onChange={(e) => saveReclass({ includeContractors: e.target.checked })} />
+            Inclure les Contractors
+          </label>
+        </Field>
         <div style={{ marginLeft: 'auto', alignSelf: 'flex-end', display: 'flex', gap: 6 }}>
           <button className={'btn' + (geo.view === 'globe' ? ' btn-ghost-active' : '')} onClick={() => updateGeo({ view: 'globe' })}>Globe</button>
           <button className={'btn' + (geo.view === 'flat' ? ' btn-ghost-active' : '')} onClick={() => updateGeo({ view: 'flat' })}>Carte plate</button>
@@ -109,7 +115,7 @@ export function GeoTab() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '2.1fr 1fr', gap: 16 }}>
         <div className="card" style={{ padding: 8 }}>
-          <WorldMap ref={mapRef} idx={idx} geo={geo} countryCentroids={COUNTRY_CENTROIDS} pinnedCountryIdx={pinnedCountryIdx} onHoverCountry={setHoverCountryIdx} onSelectCountry={onSelectCountry} />
+          <WorldMap ref={mapRef} idx={idx} geo={geo} countryCentroids={COUNTRY_CENTROIDS} pinnedCountryIdx={pinnedCountryIdx} includeContractors={reclass.includeContractors} onHoverCountry={setHoverCountryIdx} onSelectCountry={onSelectCountry} />
         </div>
         <div className="card" style={{ padding: 16 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Classement pays (top 10) — cliquez une colonne pour trier</div>

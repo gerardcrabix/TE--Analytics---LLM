@@ -3,12 +3,12 @@ import { useDashboard } from '../../state/DashboardContext';
 import { useGeoOptions } from '../../hooks/useGeoOptions';
 import { GeoFilterFields } from '../shared/GeoFilterFields';
 import { Select } from '../shared/Field';
-import { DIM_LABELS, buildPivotNode, filterUsageRows, flattenPivot, fmt } from '../../lib/dashboardIndex';
+import { DIM_LABELS, buildPivotNode, filterUsageRows, flattenPivot, fmt, monthOptionsFor } from '../../lib/dashboardIndex';
 
 const ALL_DIMS = ['year', 'month', 'region', 'country', 'segment', 'bu', 'jobFunction', 'opStatus'];
 
 export function PivotTab() {
-  const { idx, geo, updateGeo, pivot, updatePivot } = useDashboard();
+  const { idx, geo, updateGeo, pivot, updatePivot, pivotMY, updatePivotMY, reclass, saveReclass } = useDashboard();
   const opts = useGeoOptions(idx, geo, updateGeo);
 
   const dims = pivot.dims;
@@ -19,10 +19,16 @@ export function PivotTab() {
     return { expanded: [...set] };
   });
 
+  const pivotMonthOptions = useMemo(() => monthOptionsFor(idx.dash, pivotMY.year), [idx.dash, pivotMY.year]);
+  const pivotYearValue = pivotMY.year === 'all' ? 'all' : String(pivotMY.year);
+  const pivotMonthValue = pivotMY.month === 'all' ? 'all' : String(pivotMY.month);
+  const onPivotYearChange = (e) => updatePivotMY({ year: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+  const onPivotMonthChange = (e) => updatePivotMY({ month: e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) });
+
   const baseRows = useMemo(() => filterUsageRows(idx, {
-    year: geo.year, month: geo.month, region: geo.region, country: geo.country,
+    year: pivotMY.year, month: pivotMY.month, region: geo.region, country: geo.country,
     segment: geo.segment, jobFunction: geo.jobFunction, bu: geo.bu, opStatus: geo.opStatus,
-  }), [idx, geo.year, geo.month, geo.region, geo.country, geo.segment, geo.jobFunction, geo.bu, geo.opStatus]);
+  }, reclass.includeContractors), [idx, pivotMY.year, pivotMY.month, geo.region, geo.country, geo.segment, geo.jobFunction, geo.bu, geo.opStatus, reclass.includeContractors]);
 
   const rows = useMemo(() => {
     if (!dims.length) return [];
@@ -43,12 +49,16 @@ export function PivotTab() {
         <div className="card" style={{ padding: 18 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Périmètre</div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-            <Select value={opts.geoYearValue} onChange={opts.onGeoYearChange}><option value="all">Toutes années</option>{opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+            <Select value={pivotYearValue} onChange={onPivotYearChange}><option value="all">Toutes années</option>{opts.yearOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
           </div>
           <div style={{ marginBottom: 6 }}>
-            <Select value={opts.geoMonthValue} onChange={opts.onGeoMonthChange}><option value="all">Tous les mois (cumul)</option>{opts.monthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+            <Select value={pivotMonthValue} onChange={onPivotMonthChange}><option value="all">Tous les mois (cumul)</option>{pivotMonthOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
           </div>
           <GeoFilterFields opts={opts} fields={['bu', 'region', 'country', 'segment', 'jobFunction', 'opStatus']} style={{ marginBottom: 6 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--muted)', cursor: 'pointer', marginBottom: 10 }}>
+            <input type="checkbox" checked={reclass.includeContractors} onChange={(e) => saveReclass({ includeContractors: e.target.checked })} />
+            Inclure les Contractors
+          </label>
 
           <div style={{ height: 1, background: 'var(--border)', margin: '6px 0 14px' }} />
           <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Ordre de décomposition</div>
